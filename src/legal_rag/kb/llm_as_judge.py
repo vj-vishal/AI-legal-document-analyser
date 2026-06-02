@@ -23,8 +23,165 @@ from langchain_classic.schema import SystemMessage, HumanMessage
 import json
 import os
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field, field_validator, model_validator
+from enum import Enum
 
 load_dotenv()
+
+
+# ──────────────────────────────────────────────
+# Enums
+# ──────────────────────────────────────────────
+
+class OverallDecision(str, Enum):
+    PASS = "PASS"
+    RETRY = "RETRY"
+    FALLBACK = "FALLBACK"
+
+
+# ──────────────────────────────────────────────
+# Input schema
+# ──────────────────────────────────────────────
+
+class ChunkPayload(BaseModel):
+    """Represents a single chunk sent to the judge LLM."""
+    chunk_id: str
+    text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("chunk_id")
+    @classmethod
+    def chunk_id_must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("chunk_id must not be empty or whitespace")
+        return v
+
+    @field_validator("text")
+    @classmethod
+    def text_must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("chunk text must not be empty or whitespace")
+        return v
+
+
+class JudgeInput(BaseModel):
+    """Full payload sent to the judge."""
+    query: str
+    chunks: List[ChunkPayload]
+
+    @field_validator("query")
+    @classmethod
+    def query_must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("query must not be empty")
+        return v
+
+    @field_validator("chunks")
+    @classmethod
+    def chunks_must_not_be_empty(cls, v: List[ChunkPayload]) -> List[ChunkPayload]:
+        if not v:
+            raise ValueError("at least one chunk is required for judging")
+        return v
+    
+
+# ──────────────────────────────────────────────
+# Output schema (judge response)
+# ──────────────────────────────────────────────
+
+class ChunkJudgeResult(BaseModel):
+    """Per-chunk evaluation result returned by the judge LLM."""
+    chunk_id: str
+    relevant: bool
+    supports_answer: bool
+    score: float = Field(..., ge=0.0, le=1.0)
+    chunk_type_match: bool
+    reason: str
+    missing_aspects: List[str] = Field(default_factory=list)
+
+    @field_validator("score")
+    @classmethod
+    def score_must_be_in_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError(f"score must be between 0.0 and 1.0, got {v}")
+        return round(v, 4)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("reason must not be empty")
+        return v
+
+
+class JudgeOutput(BaseModel):
+    """Full structured output from the judge LLM."""
+    query: str
+    overall_decision: OverallDecision
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    retry_reason: Optional[str] = Field(default=None)
+    chunk_results: List[ChunkJudgeResult]
+
+    @field_validator("confidence")
+    @classmethod
+    def confidence_must_be_in_range(cls, v: float) -> float:
+        if not (0.0 <= v <= 1.0):
+            raise ValueError(f"confidence must be between 0.0 and 1.0, got {v}")
+        return round(v, 4)
+
+    @field_validator("chunk_results")
+    @classmethod
+    def chunk_results_must_not_be_empty(cls, v: List[ChunkJudgeResult]) -> List[ChunkJudgeResult]:
+        if not v:
+            raise ValueError("chunk_results must contain at least one entry")
+        return v
+
+    @model_validator(mode="after")
+    def retry_reason_required_on_non_pass(self) -> "JudgeOutput":
+        if self.overall_decision != OverallDecision.PASS:
+            if not self.retry_reason or not self.retry_reason.strip():
+                raise ValueError(
+                    f"retry_reason is required when overall_decision is '{self.overall_decision}'"
+                )
+        return self
+    
+# ──────────────────────────────────────────────
+# Decision manager
+# ──────────────────────────────────────────────
+
+class DecisionManagerConfig(BaseModel):
+    pass_threshold: float = Field(default=0.78, ge=0.0, le=1.0)
+    retry_threshold: float = Field(default=0.50, ge=0.0, le=1.0)
+    min_relevant_chunks_for_pass: int = Field(default=1, ge=1)
+    require_supporting_chunk: bool = True
+    require_chunk_type_match: bool = True
+
+    @model_validator(mode="after")
+    def thresholds_must_be_ordered(self) -> "DecisionManagerConfig":
+        if self.retry_threshold >= self.pass_threshold:
+            raise ValueError(
+                f"retry_threshold ({self.retry_threshold}) must be "
+                f"strictly less than pass_threshold ({self.pass_threshold})"
+            )
+        return self
+    
+# ──────────────────────────────────────────────
+# Decision output
+# ──────────────────────────────────────────────
+
+class EvaluationResult(BaseModel):
+    """Output of RetrievalDecisionManager.evaluate()."""
+    decision: OverallDecision
+    final_chunks: List[ChunkJudgeResult] = Field(default_factory=list)
+    retry_chunks: List[ChunkJudgeResult] = Field(default_factory=list)
+    fallback_message: Optional[str] = None
+
+    @model_validator(mode="after")
+    def fallback_message_required_on_fallback(self) -> "EvaluationResult":
+        if self.decision == OverallDecision.FALLBACK and not self.fallback_message:
+            raise ValueError("fallback_message must be set when decision is FALLBACK")
+        return self
+    
+
 
 JUDGE_SYSTEM_PROMPT = """You are a strict retrieval judge for a legal RAG system.
 Your task is NOT to answer the user.
@@ -52,140 +209,142 @@ class GroqRetrievalJudge:
             raise ValueError("GROQ_API_KEY is not set")
         self.client = Groq(api_key=api_key)
 
-    def judge(self, query: str, chunks: List[Document]) -> Dict[str, Any]:
-
-            payload_chunks = []
-            for c in chunks:
-                payload_chunks.append(
-                    {
-                        "chunk_id": c.metadata.get("chunk_id", "unknown"),
-                        "text": c.page_content,
-                        "metadata": c.metadata
-                    }
-                )
-
-            schema = {
-                "query": query,
-                "overall_decision": "PASS | RETRY | FALLBACK",
-                "confidence": 0.0,
-                "retry_reason": "short reason",
-                "chunk_results": [
-                    {
-                        "chunk_id": "string",
-                        "relevant": True,
-                        "supports_answer": True,
-                        "score": 0.0,
-                        "chunk_type_match": True,
-                        "reason": "short explanation",
-                        "missing_aspects": ["list of missing aspects if any"],
-                    }
-                ],
+    def _build_payload(self, query: str, chunks: List[Document]) -> JudgeInput:
+        """Validate and build the judge input from LangChain Documents."""
+        raw_chunks = [
+            {
+                "chunk_id": c.metadata["chunk_id"],
+                "text": c.page_content,
+                "metadata": c.metadata
             }
+            for c in chunks
+        ]
+        # Pydantic validates structure and field constraints here
+        return JudgeInput(query=query, chunks=raw_chunks)
 
-            user_prompt = (
-                "User query:\n"
-                f"{query}\n\n"
-                "Retrieved chunks:\n"
-                f"{json.dumps(payload_chunks, ensure_ascii=False)}\n\n"
-                "Return JSON with this schema exactly:\n"
-                f"{json.dumps(schema, ensure_ascii=False)}"
-            )
+    def judge(self, query: str, chunks: List[Document]) -> JudgeOutput :
 
-            response = self.client.chat.completions.create(
-                model=config.LLM_AS_JUDGE,
-                temperature=config.JUDGE_TEMPERATURE,
-                response_format={"type": "json_object"},
-                messages=[
-                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-            )
+        # Validate inputs
+        judge_input = self._build_payload(query, chunks)
 
-            content = response.choices[0].message.content
-            data = json.loads(content)
-            return data
+        schema = {
+            "query": query,
+            "overall_decision": "PASS | RETRY | FALLBACK",
+            "confidence": 0.0,
+            "retry_reason": "short reason",
+            "chunk_results": [
+                {
+                    "chunk_id": "string",
+                    "relevant": True,
+                    "supports_answer": True,
+                    "score": 0.0,
+                    "chunk_type_match": True,
+                    "reason": "short explanation",
+                    "missing_aspects": ["list of missing aspects if any"],
+                }
+            ],
+        }
+
+        user_prompt = (
+            "User query:\n"
+            f"{query}\n\n"
+            "Retrieved chunks:\n"
+            f"{json.dumps([c.model_dump() for c in judge_input.chunks], ensure_ascii=False)}\n\n"
+            "Return JSON with this schema exactly:\n"
+            f"{json.dumps(schema, ensure_ascii=False)}"
+        )
+
+        response = self.client.chat.completions.create(
+            model=config.LLM_AS_JUDGE,
+            temperature=config.JUDGE_TEMPERATURE,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+
+        content = response.choices[0].message.content
+        data = json.loads(content)
+        return data
     
 class RetrievalDecisionManager:
-    def __init__(
-        self,
-        pass_threshold: float = 0.78,
-        retry_threshold: float = 0.50,
-        min_relevant_chunks_for_pass: int = 1,
-        require_supporting_chunk: bool = True,
-        require_chunk_type_match: bool = True,
-    ):
-        self.pass_threshold = pass_threshold
-        self.retry_threshold = retry_threshold
-        self.min_relevant_chunks_for_pass = min_relevant_chunks_for_pass
-        self.require_supporting_chunk = require_supporting_chunk
-        self.require_chunk_type_match = require_chunk_type_match
+    def __init__(self, setting: Optional[DecisionManagerConfig] = None):
+        self.setting = setting or DecisionManagerConfig()
+        
+    def _valid_chunks(self, judge_result: JudgeOutput) -> List[ChunkJudgeResult]:
+        chunks = [c for c in judge_result["chunk_results"] if c["relevant"] is True]
 
-    def _valid_chunks(self, judge_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-        chunks = [c for c in judge_result.get("chunk_results", []) if c.get("relevant") is True]
-
-        if self.require_chunk_type_match:
-            chunks = [c for c in chunks if c.get("chunk_type_match") is True]
+        if self.setting.require_chunk_type_match:
+            chunks = [c for c in chunks if c["chunk_type_match"] is True]
 
         return chunks
 
-    def decide(self, judge_result: Dict[str, Any]) -> str:
+    def decide(self, judge_result: JudgeOutput) -> OverallDecision:
         valid_chunks = self._valid_chunks(judge_result)
-        supporting_chunks = [c for c in valid_chunks if c.get("supports_answer") is True]
-        top_score = max((c.get("score", 0.0) for c in valid_chunks), default=0.0)
-        confidence = judge_result.get("confidence", 0.0)
+        supporting_chunks = [c for c in valid_chunks if c["supports_answer"] is True]
+        top_score = max((c["score"] for c in valid_chunks), default=0.0)
+        confidence = judge_result["confidence"]
 
         if (
-            confidence >= self.pass_threshold
-            and len(valid_chunks) >= self.min_relevant_chunks_for_pass
+            confidence >= self.setting.pass_threshold
+            and len(valid_chunks) >= self.setting.min_relevant_chunks_for_pass
             and (
-                not self.require_supporting_chunk
+                not self.setting.require_supporting_chunk
                 or len(supporting_chunks) >= 1
             )
-            and top_score >= self.pass_threshold
+            and top_score >= self.setting.pass_threshold
         ):
-            return "PASS"
+            return OverallDecision.PASS
 
-        if confidence >= self.retry_threshold or top_score >= self.retry_threshold:
-            return "RETRY"
+        if confidence >= self.setting.retry_threshold or top_score >= self.setting.retry_threshold:
+            return OverallDecision.RETRY
 
-        return "FALLBACK"
+        return OverallDecision.FALLBACK
 
-    def filter_final_chunks(self, judge_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def filter_final_chunks(self, judge_result: JudgeOutput) -> List[ChunkJudgeResult]:
         valid_chunks = self._valid_chunks(judge_result)
         final_chunks = [
             c for c in valid_chunks
-            if c.get("supports_answer") is True and c.get("score", 0.0) >= self.pass_threshold
+            if c["supports_answer"] is True and c["score"] >= self.setting.pass_threshold
         ]
-        final_chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        final_chunks.sort(key=lambda x: x["score"], reverse=True)
         return final_chunks
 
-    def filter_retry_chunks(self, judge_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def filter_retry_chunks(self, judge_result: JudgeOutput) -> List[ChunkJudgeResult]:
         valid_chunks = self._valid_chunks(judge_result)
         retry_chunks = [
             c for c in valid_chunks
-            if self.retry_threshold <= c.get("score", 0.0) < self.pass_threshold
+            if self.setting.retry_threshold <= c["score"] < self.setting.pass_threshold
         ]
-        retry_chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        retry_chunks.sort(key=lambda x: x["score"], reverse=True)
         return retry_chunks
 
-    def evaluate(self, judge_result: Dict[str, Any]) -> Dict[str, Any]:
+    def evaluate(self, judge_result: JudgeOutput) -> EvaluationResult:
         decision = self.decide(judge_result)
-        result = {
-            "decision": decision,
-            "final_chunks": self.filter_final_chunks(judge_result),
-            "retry_chunks": self.filter_retry_chunks(judge_result),
-        }
-
-        if decision == "FALLBACK":
-            result["fallback_message"] = (
-                "The retrieved legal documents do not contain sufficient information to fulfill this request."
-            )
-
-        return result
+        return EvaluationResult(
+            decision=decision,
+            final_chunks=self.filter_final_chunks(judge_result),
+            retry_chunks=self.filter_retry_chunks(judge_result),
+            fallback_message=(
+                "The retrieved legal documents do not contain sufficient information "
+                "to fulfill this request."
+                if decision == OverallDecision.FALLBACK
+                else None
+            ),
+        )
     
-    def collect_final_chunks(self, original_chunks: List[Dict[str, Any]], judge_output: Dict[str, Any]) -> List[Dict[str, Any]]:
-        keep_ids = {c["chunk_id"] for c in judge_output.get("final_chunks", [])}
-        return [chunk for chunk in original_chunks if chunk.metadata.get("chunk_id") in keep_ids]
+    def collect_final_chunks(
+        self,
+        original_chunks: List[Document],
+        eval_result: EvaluationResult,
+    ) -> List[Document]:
+        """Filter original LangChain Documents to only those that passed judging."""
+        keep_ids = {c.chunk_id for c in eval_result.final_chunks}
+        return [
+            chunk for chunk in original_chunks
+            if chunk.metadata["chunk_id"] in keep_ids
+        ]
 
 if __name__ == "__main__":
     judge = GroqRetrievalJudge()
@@ -198,11 +357,11 @@ if __name__ == "__main__":
     final_result = decision_manager.evaluate(result)
     print(final_result)
     print(50*"==")
-    if final_result["decision"] == "PASS":
+    if final_result.decision == "PASS":
         matching_chunks = decision_manager.collect_final_chunks(chunks, final_result)
         print(matching_chunks)
-    elif final_result["decision"] == "FALLBACK":
-        print(final_result["decision"])
+    elif final_result.decision == "FALLBACK":
+        print(final_result.decision)
     else: 
         print("none")
     # print(json.dumps(final_result, indent=2))

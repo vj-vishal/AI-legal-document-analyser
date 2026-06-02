@@ -59,10 +59,10 @@ class KnowledgeBaseManager:
 
         result = retrieval_judge.judge(query, chunks)
         final_result = decision_manager.evaluate(result)
-        if final_result["decision"] == "PASS":
+        if final_result.decision == "PASS":
             final_chunks= decision_manager.collect_final_chunks(chunks, final_result)
             
-        elif final_result["decision"] == "FALLBACK":
+        elif final_result.decision == "FALLBACK":
             client = IndianKanoonClient()
             final_chunks= retrieve_from_kanoon(query, client)
 
@@ -82,7 +82,7 @@ class KnowledgeBaseManager:
 
 
 if __name__ == "__main__":
-    query = """briefly explain section 302 and its punishment?"""
+    query = """Who is eligible to receive legal services according to Section 12 of the Legal Services Authorities Act, 1987?"""
     pipeline = KnowledgeBaseManager()
     # results = pipeline._retrieve_with_fallback(query)
     results= pipeline.route_and_retrieve(query)

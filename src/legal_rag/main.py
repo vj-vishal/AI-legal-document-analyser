@@ -2,7 +2,7 @@ from src.legal_rag.rag.engine import LLMGenerator
 from src.legal_rag.kb.main import KnowledgeBaseManager 
 from src.legal_rag.utils import format_data 
 
-query = """briefly explain section 302 and its punishment?"""
+query = """Who is eligible to receive legal services according to Section 12 of the Legal Services Authorities Act, 1987?"""
 
 generator = LLMGenerator()
 manager= KnowledgeBaseManager()

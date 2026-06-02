@@ -10,7 +10,7 @@ def format_data(chunks: List):
         metadata_lines = []
         
         # 1. Run the loop for metadata items
-        for key, value in chunk["metadata"].items():
+        for key, value in chunk.metadata.items():
             # Skip internal backend keys
             if key in METADATA_BLACKLIST or value is None:
                 continue
@@ -28,7 +28,7 @@ def format_data(chunks: List):
     {metadata_string}
       </source_metadata>
       <content>
-        {chunk["page_content"].strip()}
+        {chunk.page_content.strip()}
       </content>
     </chunk>"""
 
