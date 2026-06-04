@@ -15,7 +15,6 @@ load_dotenv()
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
 print("Booting up Perfected Hybrid Pipeline...")
-faker_tool = Faker()
 
 
 TARGET_LABELS =  [
@@ -39,24 +38,12 @@ class GLiNER2PresidioRecognizer(EntityRecognizer):
         # self.model = GLiNER2.from_pretrained(model_name)
         self.labels = labels
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        # print(f"Loading GLiNER2 on {self.device}...")
+        self.model = GLiNER2.from_pretrained(model_name,
+                                             map_location="cuda" if torch.cuda.is_available() else "cpu",
+                                            quantize=True,)
 
-        print(f"Loading GLiNER2 on {self.device}...")
-        self.model = GLiNER2.from_pretrained(model_name)
-
-        if hasattr(self.model, "to"):
-            self.model = self.model.to(self.device)
-
-        if self.device == "cuda":
-            try:
-                self.model = self.model.half()
-            except Exception:
-                pass
-
-        if hasattr(self.model, "eval"):
-            self.model.eval()
-
-        # gc.collect()
 
     def analyze(self, text: str, entities: list[str], nlp_artifacts=None) -> list[RecognizerResult]:
         with torch.inference_mode():
@@ -91,41 +78,13 @@ presidio_analyzer = AnalyzerEngine(registry=registry)
 
 
 # ==========================================
-# STEP 2: Deterministic Faker Logic
+# STEP 2: The Sequential Masking Pipeline
 # ==========================================
-def get_fake_name(user_id: str, real_text: str, label: str) -> str:
-    seed_value = int(hashlib.md5(f"{user_id}:{real_text}".encode('utf-8')).hexdigest(), 16) % (2**32 - 1)
-    Faker.seed(seed_value)
-    
-    label = label.lower()
-    if "company" in label: 
-        return faker_tool.company()
-    elif "person" in label: 
-        return faker_tool.name()
-    elif "email" in label: 
-        return faker_tool.company_email()
-    elif "date" in label: 
-        return faker_tool.date()
-    elif "address" in label:
-        return faker_tool.street_address()
-    elif "routing number" in label:
-        return faker_tool.iban()
-    elif "tax id" in label:
-        return faker_tool.ssn()
-    else:
-        return f"[{label.upper()}_{faker_tool.word()}]"
-
-
-# ==========================================
-# STEP 3: The Bulletproof Masking Pipeline
-# ==========================================
-def analyze_and_mask_bulletproof(text: str, user_id: str) -> tuple[str, dict]:
+def analyze_and_mask_bulletproof(text: str) -> tuple[str, dict]:
     session_mapping = {}
+    label_counters = {} # Dictionary to track the sequential index for each label
     
     # 1. PRESIDIO ANALYSIS
-    # We pass `entities=TARGET_ENTITIES_UPPER` to strictly block default recognizers 
-    # like US_DRIVER_LICENSE from interfering.
-    # Presidio automatically drops overlapping index collisions natively here!
     analyzer_results = presidio_analyzer.analyze(
         text=text, 
         language="en",
@@ -136,52 +95,58 @@ def analyze_and_mask_bulletproof(text: str, user_id: str) -> tuple[str, dict]:
     # 2. EXTRACT DE-DUPLICATED STRINGS
     extracted_entities = []
     for res in analyzer_results:
-        # We slice the original text using Presidio's collision-free indices
         real_text = text[res.start:res.end]
         extracted_entities.append({
             "label": res.entity_type,
             "text": real_text
         })
         
-    # 3. GENERATE FAKE NAMES
+    # 3. GENERATE SEQUENTIAL PLACEHOLDERS (e.g., [PERSON_1])
     for entity in extracted_entities:
         real_val = entity["text"]
+        label = entity["label"]
         
-        # Only generate a fake name if we haven't processed this exact string yet
+        # Only assign a new operator if we haven't processed this exact string yet
         if real_val not in session_mapping.values():
-            fake_val = get_fake_name(user_id, real_val, entity["label"])
-            session_mapping[fake_val] = real_val
+            
+            # Initialize counter for this label if it doesn't exist
+            if label not in label_counters:
+                label_counters[label] = 1
+                
+            # Create the operator string: e.g., [COMPANY_1]
+            placeholder = f"[{label}_{label_counters[label]}]"
+            
+            # Store in mapping and increment the counter for the next one
+            session_mapping[placeholder] = real_val
+            label_counters[label] += 1
 
     # 4. GLOBAL PROPAGATION MASKING
     masked_text = text
     
-    # Flip dictionary to iterate {real_name: fake_name}
+    # Flip dictionary to iterate {real_name: placeholder}
     reverse_mapping = {v: k for k, v in session_mapping.items()}
     
-    # CRITICAL: Sort by length descending so we replace "Asterion Analytics Private Limited"
-    # before we accidentally replace just the word "Asterion" if it exists.
+    # CRITICAL: Sort by length descending to prevent partial word replacements
     sorted_real_names = sorted(reverse_mapping.keys(), key=len, reverse=True)
     
     for real_name in sorted_real_names:
-        fake_name = reverse_mapping[real_name]
+        placeholder = reverse_mapping[real_name]
         
         # Global string replace using regex. 
-        # This guarantees that if Presidio found a date on Page 2, 
-        # it gets masked on Pages 1, 3, and 4 automatically.
         pattern = re.compile(re.escape(real_name))
-        masked_text = pattern.sub(fake_name, masked_text)
+        masked_text = pattern.sub(placeholder, masked_text)
         
     return masked_text, session_mapping
 
 
 # ==========================================
-# STEP 4: The Read Path (Unmasking)
+# STEP 3: The Read Path (Unmasking)
 # ==========================================
 def restore_text(llm_output: str, mapping_dict: dict) -> str:
     restored_text = llm_output
-    for fake_name, real_name in mapping_dict.items():
-        if fake_name in restored_text:
-            restored_text = restored_text.replace(fake_name, real_name)
+    for placeholder, real_name in mapping_dict.items():
+        if placeholder in restored_text:
+            restored_text = restored_text.replace(placeholder, real_name)
     return restored_text
 
 # ==========================================
@@ -230,13 +195,41 @@ Title: Managing Partner
 Digital Signature: /s/ Neel Verma
 Date: 30 April 2026
     """
+
+    llm_output = """This is a fictional **Non-Disclosure Agreement** sample used for testing and prototyping, not a real legal contract. 
+    It says two parties, a Kolkata-based disclosing party and a Bengaluru-based receiving party, want to explore a potential collaboration 
+    around AI document processing, confidential product design, retrieval systems, and enterprise software integration.
+
+## Main points
+
+The agreement defines confidential information broadly as non-public information shared in any form, including business plans, 
+financial projections, pricing, customer strategies, source code, model pipelines, prompts, embeddings, datasets, APIs, architecture 
+diagrams, technical documentation, product specs, unreleased features, prototypes, experiments, and internal reports.
+
+It also includes signature placeholders for both sides:
+- Disclosing Party: `[COMPANY_1]`, signed by `[PERSON_1]`, Director, Product Strategy.
+- Receiving Party: `[COMPANY_2]`, signed by `[PERSON_2]`, Managing Partner.
+- Signature date: `[DOCUMENT DATE_1]`.
+
+## Short test-friendly summary
+
+A fictional NDA between two companies in Kolkata and Bengaluru for discussing an AI/document-processing collaboration, where confidential 
+information includes business, financial, and technical materials such as code, models, datasets, APIs, and product plans.
+
+## Unmasked sample
+
+Non-Disclosure Agreement between a disclosing party in Kolkata and a receiving party in Bengaluru for a possible AI and enterprise 
+software collaboration. It covers broad confidential information such as business plans, source code, model pipelines, embeddings, 
+datasets, APIs, architecture diagrams, product specifications, prototypes, and internal reports. It ends with placeholder signatures 
+for both companies and their representatives.
+"""
     
-    tenant_id = "tenant_xyz"
+    # tenant_id = "tenant_xyz"
     
     # Paste your 4-page document string here in your script
-    original_document = raw_text
+    # original_document = raw_text
     
-    safe_text, memory_vault = analyze_and_mask_bulletproof(original_document, tenant_id)
+    safe_text, memory_vault = analyze_and_mask_bulletproof(raw_text)
     
     print(f"\n[STEP 1] Perfected Session Mappings:")
     print(json.dumps(memory_vault, indent=2))
@@ -244,4 +237,8 @@ Date: 30 April 2026
     print(f"\n[STEP 2] Safe Text (Ready for ChromaDB):")
     # You will now see EVERY date and company globally masked, and NO US Driver's licenses
     print(safe_text)
+
+    print(f"\n[STEP 3] Restored Text (After LLM Output):")
+    restored_text = restore_text(llm_output, memory_vault)
+    print(restored_text)
 
