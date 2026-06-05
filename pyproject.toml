@@ -36,7 +36,7 @@ dependencies = [
     "pdf2image>=1.17.0",
     "pdfplumber>=0.11.9",
     "pillow>=12.2.0",
-    "pydantic>=2.13.3",
+    "pydantic[email]>=2.13.3",
     "pypdf>=6.10.2",
     "pytesseract>=0.3.13",
     "python-dotenv>=1.2.2",
@@ -46,6 +46,10 @@ dependencies = [
     "presidio-analyzer>=2.2.362",
     "semantic-router>=0.1.15",
     "pymupdf>=1.27.2.3",
+    "fastapi>=0.136.3",
+    "passlib>=1.7.4",
+    "python-jose>=3.5.0",
+    "bcrypt==4.0.1",
 ]
 
 
