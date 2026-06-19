@@ -12,14 +12,14 @@ from transformers import AutoTokenizer
 # LangChain Imports
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate
+# from langchain_huggingface import HuggingFaceEmbeddings
+# from langchain_groq import ChatGroq
+# from langchain_core.prompts import ChatPromptTemplate
 
 # Pydantic
 from pydantic import BaseModel, Field
-import src.legal_rag.config as config
-from src.legal_rag.user_workspace.key_value_extraction import _clean_json, extract_data_from_raw_text
+# import src.legal_rag.config as config
+# from src.legal_rag.user_workspace.key_value_extraction import _clean_json, extract_data_from_raw_text
 
 # Load environment variables
 load_dotenv()
@@ -38,7 +38,7 @@ def parse_document(pdf_path: str) -> Any:
     return docling_result.document
 
 
-def chunk_to_langchain_documents(rich_document: Any, pdf_path: str) -> List[Document]:
+def chunk_to_langchain_documents(rich_document: Any, pdf_path: str, kb_document_id: str, kb_id: str) -> List[Document]:
     """Applies Hybrid Chunking and converts to standard LangChain Documents."""
     print("3. Applying Hybrid Chunking...")
     
@@ -60,33 +60,22 @@ def chunk_to_langchain_documents(rich_document: Any, pdf_path: str) -> List[Docu
         heading_path = " > ".join(headings)
 
         doc= {
-            "chunk_id": i,
-            "source_file": pdf_path,
-            "structural_path": heading_path,
-            "page_number": chunk.meta.doc_items[0].prov[0].page_no, #if chunk.meta.doc_items else None,
-            "text": chunk.text
+            "page_content": chunk.text,
+            "metadata": {
+                "chunk_id": f"{kb_document_id}_{i+1}",
+                "kb_document_id": kb_document_id, 
+                "kb_id": kb_id,
+                "source_file": pdf_path,
+                "structural_path": heading_path,
+                "page_number": chunk.meta.doc_items[0].prov[0].page_no, #if chunk.meta.doc_items else None 
+            }
         }
         documents.append(doc)
     return documents
 
-        
-    #     lc_doc = Document(
-    #         page_content=chunk.text,
-    #         metadata={
-    #             "chunk_id": i,
-    #             "source_file": pdf_path,
-    #             "structural_path": heading_path,
-    #             "page_number": chunk.meta.doc_items[0].prov[0].page_no if chunk.meta.doc_items else None
-    #         }
-    #     )
-    #     langchain_documents.append(lc_doc)
-
-    # print(f"   -> Created {len(langchain_documents)} structural chunks.\n")
-    # return langchain_documents
-
 if __name__ == "__main__":
-    parse_doc= parse_document(config.BATCH_DIR/"batch_31_to_40.pdf")
-    chunks = chunk_to_langchain_documents(parse_doc, config.BATCH_DIR/"batch_31_to_40.pdf")
+    parse_doc= parse_document("data/intermediate/batches/batch_31_to_40.pdf")
+    chunks = chunk_to_langchain_documents(parse_doc, "data/intermediate/batches/batch_31_to_40.pdf", "550e8400-e29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-446655440001")
 
     print(chunks)
 

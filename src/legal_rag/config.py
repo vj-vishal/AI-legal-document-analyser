@@ -46,3 +46,6 @@ MIN_RELEVANT_CHUNKS_FOR_PASS = 1
 
 # ── Routing ────────────────────────────────────────────────────────────────
 RELEVANCE_THRESHOLD = 0.8
+
+# ── User Workspace ────────────────────────────────────────────────────────────────
+USER_KB_DIR = BASE_DIR / "user_workspace/local_kb_storage"

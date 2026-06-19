@@ -18,3 +18,4 @@ wheels/
 .env
 /notebooks/
 src/legal_rag/resource/
+src/legal_rag/user_workspace/local_kb_storage/
