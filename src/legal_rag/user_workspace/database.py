@@ -18,11 +18,15 @@ def get_or_create_kb_data(engine, user_id: str | UUID, filename: str) -> dict:
     Finds or creates a Knowledge Base for the user, and inserts a new document record.
     Wraps the entire process in a safe transaction.
     """
+
+    # Define a constant identifier for your single global KB
+    GLOBAL_KB_NAME = "Global_Unified_KB"
+
     # 1. Create the session 'db' using the engine you passed in
     with Session(engine) as db:
         try:
             # --- STEP 1 & 2: Find or Create Knowledge Base ---
-            query = select(KnowledgeBase).where(KnowledgeBase.user_id == user_id)
+            query = select(KnowledgeBase).where(KnowledgeBase.name == GLOBAL_KB_NAME)
             result = db.execute(query)
             kb = result.scalars().first()
 
@@ -30,8 +34,8 @@ def get_or_create_kb_data(engine, user_id: str | UUID, filename: str) -> dict:
                 # First time upload: Create new Knowledge Base
                 kb = KnowledgeBase(
                     user_id=user_id,
-                    name=f"User_{user_id}_KB", 
-                    description="Primary Knowledge Base",
+                    name=GLOBAL_KB_NAME, 
+                    description="Unified Knowledge Base for all the user's documents.",
                     is_active=True
                 )
                 db.add(kb)
@@ -41,6 +45,7 @@ def get_or_create_kb_data(engine, user_id: str | UUID, filename: str) -> dict:
             # Used KbDocuments to match your models.py, and filename from arguments
             new_document = KbDocuments(
                 knowledge_base_id=kb.id,
+                user_id=user_id,
                 title=filename, 
                 document_type="pdf",
                 status="pending_processing" 
@@ -95,7 +100,7 @@ def update_document_status(engine, document_id: str | UUID) -> dict:
 def get_user_kb_docs(engine, user_id: str | UUID) -> list[dict]:
     with Session(engine) as db:
         try:
-            query = select(KbDocuments).where(KbDocuments.knowledge_base_id == select(KnowledgeBase.id).where(KnowledgeBase.user_id == user_id))
+            query = select(KbDocuments).where(KbDocuments.user_id == select(Users.id).where(Users.id == user_id))
             result = db.execute(query)
 
             row = result.scalars().all()

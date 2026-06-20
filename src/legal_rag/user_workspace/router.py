@@ -1,6 +1,6 @@
 import logging
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
-from typing import Annotated
+from typing import Annotated, Dict
 import os
 from src.legal_rag.user_workspace.database import get_or_create_kb_data, engine, load_user_data, get_user_by_email, update_document_status, get_user_kb_docs
 from src.legal_rag.user_workspace.user_data_embedding import orchestrator
@@ -20,7 +20,7 @@ class SignupRequest(BaseModel):
 
 class SignupResponse(BaseModel):
     # user_id: str
-    message: str
+    message: Dict[str, str] 
 
 
 # ─── Login ────────────────────────────────────────────────
@@ -99,7 +99,8 @@ def load_kb(file: Annotated[UploadFile, File()],
             pdf_path=safe_file_path,
             collection_name=str(kb_id), 
             kb_document_id=str(doc_id),
-            kb_id=str(kb_id)
+            kb_id=str(kb_id),
+            user_id=str(user_id)
         )
 
         update_document_status(engine, document_id=doc_id)

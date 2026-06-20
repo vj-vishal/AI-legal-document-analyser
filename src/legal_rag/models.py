@@ -108,11 +108,13 @@ class KbDocuments(Base):
     __tablename__ = 'kb_documents'
     __table_args__ = (
         ForeignKeyConstraint(['knowledge_base_id'], ['knowledge_base.id'], name='kb_documents_knowledge_base_id_fkey'),
+        ForeignKeyConstraint(['user_id'], ['users.id'], name='kb_documents_user_id_fkey'),
         PrimaryKeyConstraint('id', name='kb_documents_pkey')
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, server_default=text('gen_random_uuid()'))
     knowledge_base_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     document_type: Mapped[str] = mapped_column(String(50), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False)

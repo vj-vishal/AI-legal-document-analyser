@@ -21,10 +21,10 @@ def user_knowledge_base_embedding(collection_name: str, json_data: List[Dict], _
             index_path=_bm25_path
         )
     
-def orchestrator(pdf_path: str, collection_name: str, kb_document_id: str, kb_id: str):
+def orchestrator(pdf_path: str, collection_name: str, kb_document_id: str, kb_id: str, user_id: str):
     # pdf_path = "data/intermediate/batches/batch_31_to_40.pdf"
     parse_doc= parse_document(pdf_path)
-    json_data = chunk_to_langchain_documents(parse_doc, pdf_path, kb_document_id, kb_id)
+    json_data = chunk_to_langchain_documents(parse_doc, pdf_path, kb_document_id, kb_id, user_id)
     # collection_name = "user_123_kb"
     _bm25_path = str(config.BM25_INDEX_DIR / collection_name)
     user_knowledge_base_embedding(collection_name, json_data, _bm25_path)
@@ -32,4 +32,4 @@ def orchestrator(pdf_path: str, collection_name: str, kb_document_id: str, kb_id
 
 if __name__ == "__main__":
     # Example usage
-    orchestrator("data/intermediate/batches/batch_31_to_40.pdf", "user_123_kb", "550e8400-e29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-446655440001")
+    orchestrator("data/intermediate/batches/batch_31_to_40.pdf", "user_123_kb", "550e8400-e29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-446655440001", "550e8400-e29b-41d4-a716-446655440002")

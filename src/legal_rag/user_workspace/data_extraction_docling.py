@@ -38,7 +38,7 @@ def parse_document(pdf_path: str) -> Any:
     return docling_result.document
 
 
-def chunk_to_langchain_documents(rich_document: Any, pdf_path: str, kb_document_id: str, kb_id: str) -> List[Document]:
+def chunk_to_langchain_documents(rich_document: Any, pdf_path: str, kb_document_id: str, kb_id: str, user_id: str) -> List[Document]:
     """Applies Hybrid Chunking and converts to standard LangChain Documents."""
     print("3. Applying Hybrid Chunking...")
     
@@ -65,6 +65,7 @@ def chunk_to_langchain_documents(rich_document: Any, pdf_path: str, kb_document_
                 "chunk_id": f"{kb_document_id}_{i+1}",
                 "kb_document_id": kb_document_id, 
                 "kb_id": kb_id,
+                "user_id": user_id,
                 "source_file": pdf_path,
                 "structural_path": heading_path,
                 "page_number": chunk.meta.doc_items[0].prov[0].page_no, #if chunk.meta.doc_items else None 
@@ -75,7 +76,7 @@ def chunk_to_langchain_documents(rich_document: Any, pdf_path: str, kb_document_
 
 if __name__ == "__main__":
     parse_doc= parse_document("data/intermediate/batches/batch_31_to_40.pdf")
-    chunks = chunk_to_langchain_documents(parse_doc, "data/intermediate/batches/batch_31_to_40.pdf", "550e8400-e29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-446655440001")
+    chunks = chunk_to_langchain_documents(parse_doc, "data/intermediate/batches/batch_31_to_40.pdf", "550e8400-e29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-446655440001", "550e8400-e29b-41d4-a716-446655440002")
 
     print(chunks)
 
