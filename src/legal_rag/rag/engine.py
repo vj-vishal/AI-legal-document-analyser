@@ -1,8 +1,9 @@
 from pathlib import Path
 from uuid import uuid4
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Tuple, Optional, Set
 import pickle
 import ijson
+import numpy as np
 import bm25s as _bm25s
 from dotenv import load_dotenv
 from pydantic import ConfigDict
@@ -20,6 +21,8 @@ import torch
 import src.legal_rag.config as config
 from langchain_classic.schema import SystemMessage, HumanMessage
 # from langchain.callbacks.base import BaseCallbackHandler
+from pydantic import ConfigDict, Field
+
 
 load_dotenv()
 
@@ -231,34 +234,49 @@ user_template = """
 # Per-User BM25 Retriever with Disk Persistence
 # ─────────────────────────────────────────────
 
+# Assuming necessary imports from your environment:
+# from langchain_core.retrievers import BaseRetriever
+# from langchain_core.callbacks import CallbackManagerForRetrieverRun
+# from langchain_core.documents import Document
+# from pydantic import ConfigDict
+# import bm25s as _bm25s
+# import config
+
 class BM25sDiskRetriever(BaseRetriever):
     """
-    LangChain-compatible BM25 retriever backed by bm25s with full disk persistence.
-
-    Each user gets an isolated index under:
-        {config.BM25_INDEX_DIR}/user_{collection_name}/
-            ├── *.index          (bm25s scoring model — IDF weights, vocab)
-            └── corpus_docs.pkl  (serialized List[Document] with all metadata)
-
-    bm25s.save() stores only the model; the Document list (text + metadata)
-    is pickled separately and looked up by the integer indices bm25s returns
-    at query time.
+    LangChain-compatible BM25 retriever backed by bm25s with full disk persistence
+    and O(1) metadata pre-filtering.
     """
 
     index_path: str
-    k: int = config.BM25_K
+    k: int = 3
 
     _bm25_index: Any = None
     _corpus_docs: List[Document] = []
+    
+    # ── Added: In-Memory Metadata Indices ──
+    _user_idx: dict[str, Set[int]] = {}
+    _kb_idx: dict[str, Set[int]] = {}
+    _doc_idx: dict[str, Set[int]] = {}
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    def _build_metadata_indices(self) -> None:
+        """Build O(1) lookups for metadata for lightning-fast pre-filtering."""
+        self._user_idx, self._kb_idx, self._doc_idx = {}, {}, {}
+        for idx, doc in enumerate(self._corpus_docs):
+            u_id = doc.metadata.get("user_id")
+            k_id = doc.metadata.get("kb_id")
+            d_id = doc.metadata.get("kb_document_id")
+
+            if u_id: self._user_idx.setdefault(u_id, set()).add(idx)
+            if k_id: self._kb_idx.setdefault(k_id, set()).add(idx)
+            if d_id: self._doc_idx.setdefault(d_id, set()).add(idx)
 
     @classmethod
     def build_and_save(cls, docs: List[Document], index_path: str) -> "BM25sDiskRetriever":
         """
         Build a fresh BM25 index from docs and persist to disk.
-        Called after every successful process_json() run.
-        BM25 does not support incremental updates — always rebuilt from full corpus.
         """
         path = Path(index_path)
         path.mkdir(parents=True, exist_ok=True)
@@ -276,13 +294,13 @@ class BM25sDiskRetriever(BaseRetriever):
         obj = cls(index_path=index_path)
         obj._bm25_index = index
         obj._corpus_docs = docs
+        obj._build_metadata_indices()  # Initialize the fast-lookups
         return obj
 
     @classmethod
     def load_from_disk(cls, index_path: str) -> "BM25sDiskRetriever":
         """
         Load an existing BM25 index from disk.
-        Called on server restart — avoids re-embedding already processed documents.
         """
         path = Path(index_path)
         corpus_pkl = path / "corpus_docs.pkl"
@@ -300,6 +318,7 @@ class BM25sDiskRetriever(BaseRetriever):
         obj = cls(index_path=index_path)
         obj._bm25_index = index
         obj._corpus_docs = docs
+        obj._build_metadata_indices()  # Initialize the fast-lookups
         return obj
 
     @property
@@ -311,25 +330,192 @@ class BM25sDiskRetriever(BaseRetriever):
         self,
         query: str,
         *,
-        run_manager: CallbackManagerForRetrieverRun
+        run_manager: CallbackManagerForRetrieverRun,
+        user_id: Optional[str] = None,
+        kb_id: Optional[str] = None,
+        document_id: Optional[str] = None,
     ) -> List[Document]:
+        
         # Lazy-load from disk on cache miss or cold start
         if self._bm25_index is None:
             loaded = BM25sDiskRetriever.load_from_disk(self.index_path)
             self._bm25_index = loaded._bm25_index
             self._corpus_docs = loaded._corpus_docs
+            # Copy over the in-memory indices so we don't have to rebuild them
+            self._user_idx = loaded._user_idx
+            self._kb_idx = loaded._kb_idx
+            self._doc_idx = loaded._doc_idx
 
         if not self._corpus_docs:
             return []
 
-        query_tokens = _bm25s.tokenize([query], stopwords="en")
-        k = min(self.k, len(self._corpus_docs))
+        query_tokens_obj = _bm25s.tokenize([query], stopwords="en")
+        filters_active = any([user_id, kb_id, document_id])
 
-        # bm25s returns integer indices (shape: n_queries × k) when no corpus
-        # was passed to .save(). Map indices back to Document objects.
-        results, _ = self._bm25_index.retrieve(query_tokens, k=k)
-        indices = results[0].tolist()
-        return [self._corpus_docs[i] for i in indices]
+        # ── Step 1: Unfiltered Path (Fast Default) ─────────────────────────
+        if not filters_active:
+            k = min(self.k, len(self._corpus_docs))
+            results, _ = self._bm25_index.retrieve(query_tokens_obj, k=k)
+            indices = results[0].tolist()
+            return [self._corpus_docs[i] for i in indices]
+
+        # ── Step 2: Instant Pre-Filter via Set Intersection ────────────────
+        sets_to_intersect = []
+        if user_id: sets_to_intersect.append(self._user_idx.get(user_id, set()))
+        if kb_id: sets_to_intersect.append(self._kb_idx.get(kb_id, set()))
+        if document_id: sets_to_intersect.append(self._doc_idx.get(document_id, set()))
+
+        allowed_set = set.intersection(*sets_to_intersect)
+
+        if not allowed_set:
+            return []
+
+        # ── Step 3: Fetch Raw Scores and Sort ONLY the Allowed Docs ────────
+        allowed_list = list(allowed_set)
+
+        try:
+            # Check if it's a tuple (older bm25s version) or an object (newer)
+            if isinstance(query_tokens_obj, tuple):
+                ids_matrix, vocab_dict = query_tokens_obj
+            else:
+                ids_matrix = query_tokens_obj.ids
+                vocab_dict = query_tokens_obj.vocab
+                
+            # Invert the dictionary so ID maps to String
+            inv_vocab = {v: k for k, v in vocab_dict.items()}
+            
+            # Translate the integer array for our query back to a list of strings
+            string_tokens = [inv_vocab[token_id] for token_id in ids_matrix[0]]
+            
+        except Exception:
+            # Bulletproof fallback if the library behavior changes unexpectedly
+            import re
+            string_tokens = re.findall(r'(?u)\b\w\w+\b', query.lower())
+            print("Warning: Failed to decode query tokens. Falling back to raw query string.")
+
+        # get_scores() returns the raw numpy array of scores for all documents without sorting
+        raw_scores = self._bm25_index.get_scores(string_tokens)
+        
+        # Depending on bm25s version, scores might be 2D. Flatten it safely.
+        if len(raw_scores.shape) > 1:
+            raw_scores = raw_scores.flatten()
+
+        # Extract the scores for just our filtered subset using NumPy indexing
+        filtered_scores = raw_scores[allowed_list]
+
+        # Sort only the filtered subset to find the top-K
+        # np.argsort sorts ascending, so we take the last 'k' elements and reverse them [::-1]
+        k = min(self.k, len(filtered_scores))
+        top_k_relative_indices = np.argsort(filtered_scores)[-k:][::-1]
+
+        # Map back to the original document list
+        return [
+            self._corpus_docs[allowed_list[rel_idx]]
+            for rel_idx in top_k_relative_indices
+        ]
+
+
+# class BM25sDiskRetriever(BaseRetriever):
+#     """
+#     LangChain-compatible BM25 retriever backed by bm25s with full disk persistence.
+
+#     Each user gets an isolated index under:
+#         {config.BM25_INDEX_DIR}/user_{collection_name}/
+#             ├── *.index          (bm25s scoring model — IDF weights, vocab)
+#             └── corpus_docs.pkl  (serialized List[Document] with all metadata)
+
+#     bm25s.save() stores only the model; the Document list (text + metadata)
+#     is pickled separately and looked up by the integer indices bm25s returns
+#     at query time.
+#     """
+
+#     index_path: str
+#     k: int = config.BM25_K
+
+#     _bm25_index: Any = None
+#     _corpus_docs: List[Document] = []
+
+#     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+#     @classmethod
+#     def build_and_save(cls, docs: List[Document], index_path: str) -> "BM25sDiskRetriever":
+#         """
+#         Build a fresh BM25 index from docs and persist to disk.
+#         Called after every successful process_json() run.
+#         BM25 does not support incremental updates — always rebuilt from full corpus.
+#         """
+#         path = Path(index_path)
+#         path.mkdir(parents=True, exist_ok=True)
+
+#         corpus_texts = [doc.page_content for doc in docs]
+#         corpus_tokens = _bm25s.tokenize(corpus_texts, stopwords="en")
+
+#         index = _bm25s.BM25()
+#         index.index(corpus_tokens)
+#         index.save(str(path))
+
+#         # Persist the corpus documents with metadata for retrieval at query time.
+#         with open(path / "corpus_docs.pkl", "wb") as f:
+#             pickle.dump(docs, f)
+
+#         # Return the retriever instance with the index and docs loaded in memory for immediate querying.
+#         obj = cls(index_path=index_path)
+#         obj._bm25_index = index
+#         obj._corpus_docs = docs
+#         return obj
+
+#     @classmethod
+#     def load_from_disk(cls, index_path: str) -> "BM25sDiskRetriever":
+#         """
+#         Load an existing BM25 index from disk.
+#         Called on server restart — avoids re-embedding already processed documents.
+#         """
+#         path = Path(index_path)
+#         corpus_pkl = path / "corpus_docs.pkl"
+
+#         if not corpus_pkl.exists():
+#             raise FileNotFoundError(
+#                 f"No BM25 index found at '{index_path}'. "
+#                 "The user must upload a document before querying."
+#             )
+
+#         index = _bm25s.BM25.load(str(path))
+#         with open(corpus_pkl, "rb") as f:
+#             docs: List[Document] = pickle.load(f)
+
+#         obj = cls(index_path=index_path)
+#         obj._bm25_index = index
+#         obj._corpus_docs = docs
+#         return obj
+
+#     @property
+#     def index_exists(self) -> bool:
+#         """True if a persisted index already exists on disk for this user."""
+#         return (Path(self.index_path) / "corpus_docs.pkl").exists()
+
+#     def _get_relevant_documents(
+#         self,
+#         query: str,
+#         *,
+#         run_manager: CallbackManagerForRetrieverRun
+#     ) -> List[Document]:
+#         # Lazy-load from disk on cache miss or cold start
+#         if self._bm25_index is None:
+#             loaded = BM25sDiskRetriever.load_from_disk(self.index_path)
+#             self._bm25_index = loaded._bm25_index
+#             self._corpus_docs = loaded._corpus_docs
+
+#         if not self._corpus_docs:
+#             return []
+
+#         query_tokens = _bm25s.tokenize([query], stopwords="en")
+#         k = min(self.k, len(self._corpus_docs))
+
+#         # bm25s returns integer indices (shape: n_queries × k) when no corpus
+#         # was passed to .save(). Map indices back to Document objects.
+#         results, _ = self._bm25_index.retrieve(query_tokens, k=k)
+#         indices = results[0].tolist()
+#         return [self._corpus_docs[i] for i in indices]
 
 
 # ─────────────────────────────────────────────
@@ -337,9 +523,11 @@ class BM25sDiskRetriever(BaseRetriever):
 # ─────────────────────────────────────────────
 
 class HybridRerankRetriever(BaseRetriever):
-    bm25: BM25sDiskRetriever
-    dense: Any
-    ensemble: EnsembleRetriever
+    bm25_internal: BM25sDiskRetriever
+    bm25_user: BM25sDiskRetriever
+    dense_internal: Any
+    dense_user: Any
+    ensemble: Any = Field(default=None)
     reranker: Any
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -347,18 +535,27 @@ class HybridRerankRetriever(BaseRetriever):
     @classmethod
     def from_components(
         cls,
-        bm25: BM25sDiskRetriever,   
-        vector_store: Chroma
+        bm25_internal: BM25sDiskRetriever,
+        bm25_user: BM25sDiskRetriever,
+        internal_store: Chroma,
+        user_store: Chroma,
     ) -> "HybridRerankRetriever":
         """
         Build the hybrid retriever from a pre-built BM25sDiskRetriever
         and the user's Chroma vector store.
         Accepts either a freshly built or disk-loaded BM25 retriever.
         """
-        dense = vector_store.as_retriever(
+        # --- Dense retrievers ---
+        dense_internal = internal_store.as_retriever(
             search_kwargs={"k": config.DENSE_K}
         )
-        ensemble = EnsembleRetriever(retrievers=[bm25, dense])
+        dense_user = user_store.as_retriever(
+            search_kwargs={"k": config.DENSE_K}
+        )
+
+        # ensemble = EnsembleRetriever(retrievers=[dense_internal, dense_user, bm25_internal, bm25_user],
+        #                              weights=[0.25, 0.25, 0.25, 0.25]
+        #                              )
         # reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
         # reranker = FlagReranker(
@@ -376,9 +573,11 @@ class HybridRerankRetriever(BaseRetriever):
 )
 
         return cls(
-            bm25=bm25,
-            dense=dense,
-            ensemble=ensemble,
+            bm25_internal=bm25_internal,
+            bm25_user=bm25_user,
+            dense_internal=dense_internal,
+            dense_user=dense_user,
+            # ensemble=ensemble,
             reranker=reranker
         )
 
@@ -386,23 +585,69 @@ class HybridRerankRetriever(BaseRetriever):
         self,
         query: str,
         *,
-        run_manager: CallbackManagerForRetrieverRun
+        run_manager: CallbackManagerForRetrieverRun,
+        user_id: str = None,
+        kb_id: str = None,
+        kb_document_id: str = None
     ) -> List[Document]:
 
-        docs = self.ensemble.invoke(query)
+        # docs = self.ensemble.invoke(query)
 
-        if not docs:
+        # if not docs:
+        #     return []
+
+        # 1. Build the Chroma-specific native filter
+        chroma_filter = {
+            "$and": [
+                {"user_id": user_id},
+                {"kb_id": kb_id},
+                {"kb_document_id": kb_document_id}  # Ensure this key matches your ingestion schema
+            ]
+        }
+
+        # 2. Retrieve from Dense Stores with localized, thread-safe filters
+        # We access the underlying vectorstore directly to avoid modifying shared state
+        dense_int_docs = self.dense_internal.vectorstore.similarity_search(
+            query, k=config.DENSE_K
+        )
+        # print(f"Dense Internal Docs Retrieved: {dense_int_docs}")
+        # print(50*"===")
+
+        dense_usr_docs = self.dense_user.vectorstore.similarity_search(
+            query, k=config.DENSE_K, filter=chroma_filter
+        )
+        # print(f"Dense User Docs Retrieved: {dense_usr_docs}")
+        # print(50*"===")
+
+        bm25_int_docs = self.bm25_internal.invoke(query)
+        # print(f"BM25 Internal Docs Retrieved: {bm25_int_docs}")
+        # print(50*"===")
+
+        bm25_usr_docs = self.bm25_user.invoke(query, user_id=user_id, kb_id=kb_id, document_id=kb_document_id)
+        # print(f"BM25 User Docs Retrieved: {bm25_usr_docs}")
+        # print(50*"===")
+
+        # Combine all retrieved documents
+        all_docs = dense_int_docs + dense_usr_docs + bm25_int_docs + bm25_usr_docs
+
+        seen_contents = set()
+        unique_docs = []
+        for doc in all_docs:
+            if doc.page_content not in seen_contents:
+                seen_contents.add(doc.page_content)
+                unique_docs.append(doc)
+
+        if not unique_docs:
             return []
 
-        pairs = [(query, doc.page_content) for doc in docs]
+        pairs = [(query, doc.page_content) for doc in unique_docs]
         scores = self.reranker.predict(pairs)
 
-        ranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+        ranked = sorted(zip(unique_docs, scores), key=lambda x: x[1], reverse=True)
         return [doc for doc, _ in ranked[:config.RERANK_TOP_K]]
 
         # added just for checking the scores
         # top = ranked[:config.RERANK_TOP_K]
-
         # out_docs = []
         # for doc, score in top:
         #     meta = dict(doc.metadata) if doc.metadata else {}
@@ -412,15 +657,18 @@ class HybridRerankRetriever(BaseRetriever):
 
         # return out_docs
     
-    def debug_sources(self, query: str) -> Tuple[List[Document], List[Document]]:
+    def debug_sources(self, query: str, user_id: str , kb_id: str, kb_document_id: str) -> Tuple[List[Document], List[Document]]:
         """
         Return BM25-only docs and dense-only docs for a query, before ensemble fusion.
         Only for debugging / analysis.
         """
         # bm25 and dense are both retrievers
-        bm25_docs = self.bm25.invoke(query)
-        dense_docs = self.dense.invoke(query)
-        return bm25_docs, dense_docs
+        dense_int_docs = self.dense_internal.invoke(query)
+        dense_usr_docs = self.dense_user.invoke(query)
+
+        bm25_int_docs = self.bm25_internal.invoke(query)
+        bm25_usr_docs = self.bm25_user.invoke(query)
+        return dense_int_docs, dense_usr_docs, bm25_int_docs, bm25_usr_docs
 
 # ─────────────────────────────────────────────
 # RAG Pipeline
@@ -435,7 +683,7 @@ class RAGPipeline:
 
         # Per-user BM25 index path — mirrors Chroma collection isolation
         self._bm25_path = str(
-            Path(config.BM25_INDEX_DIR) / f"user_{_collection}"
+            Path(config.BM25_INDEX_DIR) / f"{_collection}"
         )
 
         if embeddings is not None:
@@ -573,11 +821,12 @@ class LLMGenerator:
 
 if __name__ == "__main__":
     # Quick local test
-    pipeline = RAGPipeline()
+    # pipeline = RAGPipeline()
+    bm25= BM25sDiskRetriever(index_path=str(config.BM25_INDEX_DIR / "0d3493be-c6b9-47dd-9387-7301b812b52a"))
     
 
-    query = "What are the specific financial and administrative responsibilities of the Secretary of the Committee under Regulation 8?"
-    answer = pipeline.generate_answer(query)
+    query = "What are the powers available to a court for enforcing execution of a decree under Section 51 of the Code of Civil Procedure?"
+    answer = bm25.invoke(query,user_id= "80379425-7a6e-49b4-b8db-56341cb66c43", kb_id= "0d3493be-c6b9-47dd-9387-7301b812b52a") #document_id= "24cfd42d-dd3b-4ae3-a706-3d442addc5e7")
 
     print("\nANSWER:\n", answer)
     # print("\nSOURCES:\n", sources)
