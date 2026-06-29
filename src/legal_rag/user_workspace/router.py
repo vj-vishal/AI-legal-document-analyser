@@ -9,6 +9,13 @@ from src.legal_rag.auth.hashing import hash_password, verify_password
 from src.legal_rag.auth.jwt import create_access_token, decode_token
 from pydantic import BaseModel, EmailStr, Field
 from src.legal_rag.config import USER_KB_DIR
+from fastapi.middleware.cors import CORSMiddleware
+from src.legal_rag.database import create_new_session, update_session_title, log_user_query, get_chat_history, log_ai_response, log_analysis_record, get_chat_session_view, get_chat_message
+from src.legal_rag.main import chat_orchestrator
+from pydantic import BaseModel
+from typing import Optional
+from fastapi import Depends, HTTPException, status
+import logging
 
 # ─── Signup ───────────────────────────────────────────────
 
@@ -35,6 +42,15 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 app= FastAPI()
+
+# Add this entire block right below app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"], # This is the VIP pass for React
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods (POST, GET, etc.)
+    allow_headers=["*"], # Allows all headers
+)
 
 STORAGE_BASE_DIR = USER_KB_DIR
 
@@ -143,6 +159,138 @@ def user_kb_docs( user_id: str = Depends(get_current_user_id)):
                     "created_at": doc.created_at.isoformat() if doc.created_at else None,
                     "updated_at": doc.updated_at.isoformat() if doc.updated_at else None
                 } for doc in docs]
+            }
+    except Exception as e:
+        logging.error(f"Error retrieving user documents for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while retrieving user documents: {str(e)}"
+        )
+
+# 1. Define the Expected JSON Payload Structure
+class ChatRequest(BaseModel):
+    query: str
+    knowledge_base_id: Optional[str] = None
+    kb_document_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+@app.post("/chat")
+def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
+    
+    # 2. Unpack the variables so the rest of your code works perfectly without changes
+    query = request.query
+    knowledge_base_id = request.knowledge_base_id
+    kb_document_id = request.kb_document_id
+    session_id = request.session_id
+
+    try:
+        is_new_session = False
+
+        # 1. Session Strategy Logic
+        if not session_id or session_id == "new":
+            # If no session exists, create a new one
+            session_id = create_new_session(
+                engine, 
+                user_id=user_id, 
+                knowledge_base_id=knowledge_base_id
+            )
+            is_new_session = True
+
+        # 2. Log User Query immediately to the current session
+        # (Pass actual token counts if you have a tokenizer, or update later)
+        log_user_query(engine, session_id=session_id, query=query, token=25)
+
+        # 3. Dynamic Titling (Only triggers on the very first message)
+        if is_new_session:
+            update_session_title(engine, session_id, first_user_message=query)
+
+        # 4. Fetch Conversation Memory (Crucial for multi-turn chat)
+        chat_history = get_chat_history(engine, session_id, limit=5)
+
+        # 5. Execute RAG Pipeline / LLM Orchestration
+        # Pass chat_history into your orchestrator so the LLM remembers previous turns
+        response_text = chat_orchestrator(
+            query=query, 
+            user_id=user_id, 
+            kb_id=knowledge_base_id, 
+            kb_document_id=kb_document_id,
+            chat_history=chat_history 
+        )
+
+        # 6. Log AI Response & Audit Trail
+        log_ai_response(engine, session_id, response_text, tokens=213)
+
+        # Only log to the audit analysis table if they are actually querying a document
+        if knowledge_base_id and kb_document_id:
+            log_analysis_record(
+                engine, 
+                user_id, 
+                kb_document_id, 
+                session_id, 
+                query, 
+                response=response_text, 
+                sources={"S1": "doc1", "S2": "doc2"}, 
+                confidence_score=0.8
+            )
+
+        # 7. Return payload to frontend
+        return {
+            "status": "success",
+            "session_id": session_id, # Send this back so frontend knows what ID to use next time
+            "message": "Data logged successfully",
+            "answer": response_text
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logging.error(f"Pipeline processing failure for user {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while providing query response: {str(e)}"
+        )
+    
+@app.get("/chat_session_view")
+def chat_session_view( user_id: str = Depends(get_current_user_id)):
+    try:
+        sessions= get_chat_session_view(engine, user_id= user_id)
+        if sessions:
+            return {
+                "status": "success",
+                "message": "User documents retrieved successfully.",
+                "data": [
+                    {
+                        "id": str(session.id), 
+                        "title": session.title,
+                        "knowledge_base_id": str(session.knowledge_base_id)
+                    } 
+                    for session in sessions
+                         ]
+            }
+    except Exception as e:
+        logging.error(f"Error retrieving user documents for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while retrieving user documents: {str(e)}"
+        )
+
+@app.get("/chat_message_view")
+def chat_message_view( session_id, user_id: str = Depends(get_current_user_id)):
+    try:
+        messages= get_chat_message(engine, session_id= session_id)
+        if messages:
+            return {
+                "status": "success",
+                "message": "User documents retrieved successfully.",
+                "data": [
+                    {
+                        "id": str(message.id), 
+                        "role": message.role,
+                        "messages": message.message,
+                        "token_used": message.tokens_used
+                    } 
+                    for message in messages
+                         ]
             }
     except Exception as e:
         logging.error(f"Error retrieving user documents for {user_id}: {str(e)}")

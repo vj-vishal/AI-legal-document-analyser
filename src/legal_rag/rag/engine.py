@@ -22,6 +22,7 @@ import src.legal_rag.config as config
 from langchain_classic.schema import SystemMessage, HumanMessage
 # from langchain.callbacks.base import BaseCallbackHandler
 from pydantic import ConfigDict, Field
+import re
 
 
 load_dotenv()
@@ -59,6 +60,10 @@ You must follow the instructions below unconditionally.
 - If the user asks both a legal question and for drafting, handle them separately in the same response under clearly labeled sections.
 - Apply the correct rules for each section independently.
 
+4. Conversational Context
+- Use the `<chat_history>` to understand follow-up questions, resolve pronouns, and maintain conversational continuity.
+- The `<chat_history>` is NEVER a source of legal truth or authority. Legal facts and rules must strictly come from `<context_chunks>`.
+
 ### Behavior for Knowledge/QA Queries
 
 If the request is a Knowledge/QA Query, do the following:
@@ -71,14 +76,14 @@ If the request is a Knowledge/QA Query, do the following:
 2. Mandatory citation
 - Every material legal statement, rule, proposition, conclusion, or factual claim must include an inline citation.
 - The citation must appear at the end of the relevant sentence or paragraph.
-- Use a consistent citation format and include all available metadata fields from the source chunk.
-- If metadata fields vary by chunk, include every available key-value pair for that chunk without inventing missing metadata.
+- Only cite the Document Name, Section, and Page Number. 
+- Do not include system IDs, UUIDs, or file paths.
 
 3. Citation format
 - Use this format:
-  `[Source: <all available metadata key-value pairs from the chunk>]`
+  `[Source: <Document Name>, <Section>, Page <X>]`
 - Example:
-  `[Source: title=Indian Contract Act Summary; section=Offer and Acceptance; page=12; chunk_id=ch_004; jurisdiction=India]`
+  `[Source: Indian Contract Act Summary, page=12]`
 
 4. Insufficient information
 - If the chunks do not contain enough information to answer the question, output exactly:
@@ -96,7 +101,7 @@ If the request is a Drafting/Template Query, do the following:
 2. Extract fillable requirements before drafting
 - First analyze the retrieved template and determine what information is required to complete it.
 - Identify all required inputs, such as party names, addresses, dates, consideration, amounts, jurisdiction, property details, obligations, signatures, witnesses, annexures, schedules, or any other placeholders/fields reflected by the template.
-- Extract from the user’s request any values already provided.
+- Extract any values already provided from BOTH the current user’s request AND the `<chat_history>`.
 
 3. Ask for all missing information in one shot
 - If any required information is missing, do not draft the final document yet.
@@ -137,7 +142,7 @@ If the request is a Drafting/Template Query, do the following:
 
 Follow this exact decision order:
 
-1. Read the user query.
+1. Read the `<chat_history>` and the user query.
 2. Read the `<context_chunks>`.
 3. Determine whether the query is:
 - Knowledge/QA Query
@@ -152,7 +157,7 @@ Follow this exact decision order:
 5. If Drafting/Template Query:
 - Determine whether the chunks contain a usable template or form.
 - Analyze the template to identify all required fields.
-- Extract all information already supplied by the user.
+- Extract all information already supplied by the user in the current query and the `<chat_history>`.
 - If required fields are missing, ask for all missing requirements in one consolidated response.
 - If enough information is available, produce the completed draft using the retrieved template as the baseline.
 - Use brackets for any still-missing fields only where necessary.
@@ -165,6 +170,10 @@ Follow this exact decision order:
 
 1. For Knowledge/QA Queries
 - Be clear, objective, and concise.
+- Format your response using clean Markdown.
+- If you are listing multiple steps, conditions, or actions, you MUST use a numbered list or bullet points.
+- Every numbered item or bullet point MUST begin on a new line.
+- Insert a blank line between distinct paragraphs or list items to ensure readability.
 - Do not provide unsupported advice.
 - Cite all material statements inline.
 
@@ -193,8 +202,9 @@ Follow this exact decision order:
 ### Input Variables
 
 You will receive:
-- `<user_query>`: the user’s request
-- `<context_chunks>`: the retrieved legal text and metadata
+- `<chat_history>`: the previous conversational turns to provide context and previously supplied variables.
+- `<context_chunks>`: the retrieved legal text and metadata.
+- `<user_query>`: the user’s newest request.
 
 ### Final fallback sentence
 
@@ -203,6 +213,10 @@ If the chunks do not contain enough information to answer the legal question or 
 """
 
 user_template = """
+<chat_history>
+{chat_history}
+</chat_history>
+
 <context_chunks>
 {chunks}
 </context_chunks>
@@ -389,7 +403,6 @@ class BM25sDiskRetriever(BaseRetriever):
             
         except Exception:
             # Bulletproof fallback if the library behavior changes unexpectedly
-            import re
             string_tokens = re.findall(r'(?u)\b\w\w+\b', query.lower())
             print("Warning: Failed to decode query tokens. Falling back to raw query string.")
 
@@ -413,110 +426,6 @@ class BM25sDiskRetriever(BaseRetriever):
             self._corpus_docs[allowed_list[rel_idx]]
             for rel_idx in top_k_relative_indices
         ]
-
-
-# class BM25sDiskRetriever(BaseRetriever):
-#     """
-#     LangChain-compatible BM25 retriever backed by bm25s with full disk persistence.
-
-#     Each user gets an isolated index under:
-#         {config.BM25_INDEX_DIR}/user_{collection_name}/
-#             ├── *.index          (bm25s scoring model — IDF weights, vocab)
-#             └── corpus_docs.pkl  (serialized List[Document] with all metadata)
-
-#     bm25s.save() stores only the model; the Document list (text + metadata)
-#     is pickled separately and looked up by the integer indices bm25s returns
-#     at query time.
-#     """
-
-#     index_path: str
-#     k: int = config.BM25_K
-
-#     _bm25_index: Any = None
-#     _corpus_docs: List[Document] = []
-
-#     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-#     @classmethod
-#     def build_and_save(cls, docs: List[Document], index_path: str) -> "BM25sDiskRetriever":
-#         """
-#         Build a fresh BM25 index from docs and persist to disk.
-#         Called after every successful process_json() run.
-#         BM25 does not support incremental updates — always rebuilt from full corpus.
-#         """
-#         path = Path(index_path)
-#         path.mkdir(parents=True, exist_ok=True)
-
-#         corpus_texts = [doc.page_content for doc in docs]
-#         corpus_tokens = _bm25s.tokenize(corpus_texts, stopwords="en")
-
-#         index = _bm25s.BM25()
-#         index.index(corpus_tokens)
-#         index.save(str(path))
-
-#         # Persist the corpus documents with metadata for retrieval at query time.
-#         with open(path / "corpus_docs.pkl", "wb") as f:
-#             pickle.dump(docs, f)
-
-#         # Return the retriever instance with the index and docs loaded in memory for immediate querying.
-#         obj = cls(index_path=index_path)
-#         obj._bm25_index = index
-#         obj._corpus_docs = docs
-#         return obj
-
-#     @classmethod
-#     def load_from_disk(cls, index_path: str) -> "BM25sDiskRetriever":
-#         """
-#         Load an existing BM25 index from disk.
-#         Called on server restart — avoids re-embedding already processed documents.
-#         """
-#         path = Path(index_path)
-#         corpus_pkl = path / "corpus_docs.pkl"
-
-#         if not corpus_pkl.exists():
-#             raise FileNotFoundError(
-#                 f"No BM25 index found at '{index_path}'. "
-#                 "The user must upload a document before querying."
-#             )
-
-#         index = _bm25s.BM25.load(str(path))
-#         with open(corpus_pkl, "rb") as f:
-#             docs: List[Document] = pickle.load(f)
-
-#         obj = cls(index_path=index_path)
-#         obj._bm25_index = index
-#         obj._corpus_docs = docs
-#         return obj
-
-#     @property
-#     def index_exists(self) -> bool:
-#         """True if a persisted index already exists on disk for this user."""
-#         return (Path(self.index_path) / "corpus_docs.pkl").exists()
-
-#     def _get_relevant_documents(
-#         self,
-#         query: str,
-#         *,
-#         run_manager: CallbackManagerForRetrieverRun
-#     ) -> List[Document]:
-#         # Lazy-load from disk on cache miss or cold start
-#         if self._bm25_index is None:
-#             loaded = BM25sDiskRetriever.load_from_disk(self.index_path)
-#             self._bm25_index = loaded._bm25_index
-#             self._corpus_docs = loaded._corpus_docs
-
-#         if not self._corpus_docs:
-#             return []
-
-#         query_tokens = _bm25s.tokenize([query], stopwords="en")
-#         k = min(self.k, len(self._corpus_docs))
-
-#         # bm25s returns integer indices (shape: n_queries × k) when no corpus
-#         # was passed to .save(). Map indices back to Document objects.
-#         results, _ = self._bm25_index.retrieve(query_tokens, k=k)
-#         indices = results[0].tolist()
-#         return [self._corpus_docs[i] for i in indices]
-
 
 # ─────────────────────────────────────────────
 # Hybrid + Rerank Retriever
@@ -596,36 +505,76 @@ class HybridRerankRetriever(BaseRetriever):
         # if not docs:
         #     return []
 
-        # 1. Build the Chroma-specific native filter
-        chroma_filter = {
-            "$and": [
-                {"user_id": user_id},
-                {"kb_id": kb_id},
-                {"kb_document_id": kb_document_id}  # Ensure this key matches your ingestion schema
-            ]
-        }
+        # # 1. Build the Chroma-specific native filter
+        # chroma_filter = {
+        #     "$and": [
+        #         {"user_id": user_id},
+        #         {"kb_id": kb_id},
+        #         {"kb_document_id": kb_document_id}  # Ensure this key matches your ingestion schema
+        #     ]
+        # }
 
-        # 2. Retrieve from Dense Stores with localized, thread-safe filters
-        # We access the underlying vectorstore directly to avoid modifying shared state
+        # # 2. Retrieve from Dense Stores with localized, thread-safe filters
+        # # We access the underlying vectorstore directly to avoid modifying shared state
+        # dense_int_docs = self.dense_internal.vectorstore.similarity_search(
+        #     query, k=config.DENSE_K
+        # )
+        # # print(f"Dense Internal Docs Retrieved: {dense_int_docs}")
+        # # print(50*"===")
+
+        # dense_usr_docs = self.dense_user.vectorstore.similarity_search(
+        #     query, k=config.DENSE_K, filter=chroma_filter
+        # )
+        # # print(f"Dense User Docs Retrieved: {dense_usr_docs}")
+        # # print(50*"===")
+
+        # bm25_int_docs = self.bm25_internal.invoke(query)
+        # # print(f"BM25 Internal Docs Retrieved: {bm25_int_docs}")
+        # # print(50*"===")
+
+        # bm25_usr_docs = self.bm25_user.invoke(query, user_id=user_id, kb_id=kb_id, document_id=kb_document_id)
+        # print(f"BM25 User Docs Retrieved: {bm25_usr_docs}")
+        # print(50*"===")
+
+        # 1. Always retrieve from Internal Stores
         dense_int_docs = self.dense_internal.vectorstore.similarity_search(
             query, k=config.DENSE_K
         )
-        # print(f"Dense Internal Docs Retrieved: {dense_int_docs}")
-        # print(50*"===")
-
-        dense_usr_docs = self.dense_user.vectorstore.similarity_search(
-            query, k=config.DENSE_K, filter=chroma_filter
-        )
-        # print(f"Dense User Docs Retrieved: {dense_usr_docs}")
-        # print(50*"===")
-
         bm25_int_docs = self.bm25_internal.invoke(query)
-        # print(f"BM25 Internal Docs Retrieved: {bm25_int_docs}")
-        # print(50*"===")
 
-        bm25_usr_docs = self.bm25_user.invoke(query, user_id=user_id, kb_id=kb_id, document_id=kb_document_id)
-        # print(f"BM25 User Docs Retrieved: {bm25_usr_docs}")
-        # print(50*"===")
+        # 2. Conditionally retrieve from User Stores
+        dense_usr_docs = []
+        bm25_usr_docs = []
+
+        # Only proceed with user stores if at least user_id and kb_id are provided
+        if user_id and kb_id and kb_document_id:
+            # Build the Chroma-specific native filter dynamically
+            filter_conditions = [
+                {"user_id": user_id},
+                {"kb_id": kb_id},
+                {"kb_document_id": kb_document_id}
+            ]
+            # if kb_document_id:
+            #     filter_conditions.append({"kb_document_id": kb_document_id})
+
+            # Chroma requires a specific format: direct dict for 1 condition, $and for multiple
+            if len(filter_conditions) > 1:
+                chroma_filter = {"$and": filter_conditions}
+            else:
+                chroma_filter = filter_conditions[0]
+
+            # Fetch User Docs
+            dense_usr_docs = self.dense_user.vectorstore.similarity_search(
+                query, k=config.DENSE_K, filter=chroma_filter
+            )
+            
+            # Pass document_id to BM25 only if it exists (assuming your BM25 implementation handles None gracefully)
+            bm25_usr_docs = self.bm25_user.invoke(
+                query, 
+                user_id=user_id, 
+                kb_id=kb_id, 
+                document_id=kb_document_id
+            )
 
         # Combine all retrieved documents
         all_docs = dense_int_docs + dense_usr_docs + bm25_int_docs + bm25_usr_docs
@@ -805,7 +754,7 @@ class LLMGenerator:
             streaming= False
         )
 
-    def generate_answer(self, query: str, formatted_chunks: list) -> str:
+    def generate_answer(self, query: str, formatted_chunks: list, chat_history: list) -> str:
         # Combine the chunks into a single text block
         chunks_string = "\n\n".join(formatted_chunks)
         
@@ -813,7 +762,8 @@ class LLMGenerator:
             SystemMessage(content=system_template), # Your RAG system template
             HumanMessage(content=user_template.format(
                 chunks=chunks_string,
-                query=query
+                query=query,
+                chat_history=chat_history
             ))
         ]
         response = self.llm.invoke(messages)
