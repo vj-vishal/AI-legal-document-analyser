@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+dist
 
 # IDE files
 .vscode/
@@ -19,3 +20,4 @@ wheels/
 /notebooks/
 src/legal_rag/resource/
 src/legal_rag/user_workspace/local_kb_storage/
+frontend/node_modules
