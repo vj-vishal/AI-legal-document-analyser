@@ -10,12 +10,18 @@ from src.legal_rag.auth.jwt import create_access_token, decode_token
 from pydantic import BaseModel, EmailStr, Field
 from src.legal_rag.config import USER_KB_DIR
 from fastapi.middleware.cors import CORSMiddleware
-from src.legal_rag.database import create_new_session, update_session_title, log_user_query, get_chat_history, log_ai_response, log_analysis_record, get_chat_session_view, get_chat_message
+from src.legal_rag.database import create_new_session, update_session_title, log_user_query, get_chat_history, log_ai_response, log_analysis_record, get_chat_session_view, get_chat_message, get_user_profile
 from src.legal_rag.main import chat_orchestrator
 from pydantic import BaseModel
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 import logging
+from dotenv import load_dotenv
+import traceback
+
+load_dotenv()
+
+INTERNAL_KB_ID = os.getenv("INTERNAL_KB_ID")
 
 # ─── Signup ───────────────────────────────────────────────
 
@@ -183,6 +189,10 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
     kb_document_id = request.kb_document_id
     session_id = request.session_id
 
+    if not knowledge_base_id and not kb_document_id:
+        knowledge_base_id= INTERNAL_KB_ID
+        kb_document_id= None    
+
     try:
         is_new_session = False
 
@@ -241,15 +251,24 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
             "answer": response_text
         }
 
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        logging.error(f"Pipeline processing failure for user {user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An error occurred while providing query response: {str(e)}"
-        )
+    # except HTTPException as he:
+    #     raise he
+    # except Exception as e:
+    #     logging.error(f"Pipeline processing failure for user {user_id}: {str(e)}")
+    #     raise HTTPException(
+    #         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+    #         detail=f"An error occurred while providing query response: {str(e)}"
+    #     )
     
+    except Exception as e:
+    
+        traceback.print_exc()   # <-- shows exact file + line number
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error: {str(e)}"
+        )
+
 @app.get("/chat_session_view")
 def chat_session_view( user_id: str = Depends(get_current_user_id)):
     try:
@@ -297,4 +316,26 @@ def chat_message_view( session_id, user_id: str = Depends(get_current_user_id)):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred while retrieving user documents: {str(e)}"
+        )
+    
+@app.get("/user_profile")
+def user_profile(user_id: str = Depends(get_current_user_id)):
+    try:
+        docs= get_user_profile(engine, user_id)
+        if docs:
+            return {
+                "status": "success",
+                "message": "User documents retrieved successfully.",
+                "data": [
+                    { 
+                        "name": docs.name,
+                        "role": docs.role
+                    } 
+                         ]
+            }
+    except Exception as e:
+        logging.error(f"Error retrieving user profile for {user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An error occurred while retrieving user profile: {str(e)}"
         )

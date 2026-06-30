@@ -3,6 +3,9 @@ import axios from 'axios';
 import api from './api';
 
 export default function Dashboard() {
+  // --- USER STATE ---
+  const [userName, setUserName] = useState(''); // State to hold dynamic user name
+
   // --- NAVIGATION STATE ---
   const [activeView, setActiveView] = useState('home'); // 'home' | 'documents' | 'chat'
 
@@ -39,7 +42,24 @@ export default function Dashboard() {
     }
   };
 
+  // Fetch initial data on mount
   useEffect(() => {
+    // Fetch User Profile
+    const fetchProfile = async () => {
+      try {
+        // REPLACE '/user_profile' with your actual backend endpoint for fetching user data
+        const response = await api.get('/user_profile'); 
+        if (response.status === 200) {
+          const fetchedName = response.data.data[0]?.name;
+          setUserName(fetchedName || 'User'); 
+        }
+      } catch (error) {
+        console.error("Failed to fetch profile:", error);
+        setUserName('User'); // Fallback
+      }
+    };
+
+    fetchProfile();
     fetchChatSessions();
   }, []);
 
@@ -164,7 +184,6 @@ export default function Dashboard() {
 
   const handleSendMessage = async () => {
     if (!chatInput.trim()) return;
-    if (!selectedKbId) return alert("Please select a document from the dropdown first.");
 
     const userMsg = { role: 'user', content: chatInput };
     setChatMessages(prev => [...prev, userMsg]);
@@ -173,8 +192,8 @@ export default function Dashboard() {
 
     const payload = {
       query: userMsg.content,
-      knowledge_base_id: selectedKbId,
-      kb_document_id: selectedDocId
+      knowledge_base_id: selectedKbId || null,
+      kb_document_id: selectedDocId || null
     };
     
     if (sessionId) {
@@ -271,7 +290,7 @@ export default function Dashboard() {
           
           <div className="flex-1 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
             {chatSessions.length > 0 ? (
-              chatSessions.map((session, idx) => (
+              chatSessions.slice().reverse().map((session, idx) => (
                 <button 
                   key={session.id || idx}
                   onClick={() => loadChatSession(session)} // <-- TRIGGER THE NEW FUNCTION HERE
@@ -325,8 +344,9 @@ export default function Dashboard() {
             <div className="flex items-center gap-2 text-sm bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200 font-medium">
               <span className="text-blue-700">🪙</span> 100 free left
             </div>
+            {/* UPDATED: Dynamic user avatar */}
             <div className="w-9 h-9 rounded-full bg-blue-700 text-white font-bold flex items-center justify-center shadow-sm">
-              V
+              {userName ? userName.charAt(0).toUpperCase() : 'U'}
             </div>
           </div>
         </header>
@@ -342,9 +362,13 @@ export default function Dashboard() {
                   <div className="absolute top-0 right-0 w-64 h-64 bg-blue-50 rounded-full blur-3xl -mr-20 -mt-20 opacity-50 pointer-events-none"></div>
 
                   <div className="flex items-center gap-5 relative z-10">
-                    <div className="w-16 h-16 rounded-full bg-blue-50 text-blue-700 font-bold text-3xl flex items-center justify-center border border-blue-100">V</div>
+                    {/* UPDATED: Dynamic user avatar in welcome banner */}
+                    <div className="w-16 h-16 rounded-full bg-blue-50 text-blue-700 font-bold text-3xl flex items-center justify-center border border-blue-100">
+                      {userName ? userName.charAt(0).toUpperCase() : 'U'}
+                    </div>
                     <div>
-                      <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome! <span className="text-xs align-middle bg-slate-100 px-2 py-1 rounded-md text-slate-600 ml-2 font-semibold border border-slate-200">Free Tier</span></h2>
+                      {/* UPDATED: Dynamic welcome text */}
+                      <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome {userName}! <span className="text-xs align-middle bg-slate-100 px-2 py-1 rounded-md text-slate-600 ml-2 font-semibold border border-slate-200">Free Tier</span></h2>
                       <p className="text-slate-600 mt-1 font-medium">Welcome to your AndhaKanoon workspace</p>
                     </div>
                   </div>
@@ -478,7 +502,7 @@ export default function Dashboard() {
                 <div>
                   <h3 className="font-bold text-slate-900">Legal Assistant</h3>
                   <p className="text-xs text-slate-500">
-                    {sessionId ? "Continuing conversation" : "Select a document below to begin analysis"}
+                    {sessionId ? "Continuing conversation" : "Select a document below or ask a general question"}
                   </p>
                 </div>
                 
@@ -490,7 +514,7 @@ export default function Dashboard() {
                     onChange={handleDocSelection}
                     disabled={!!sessionId} 
                   >
-                    <option value="" disabled>-- Select a case file --</option>
+                    <option value="">-- General Chat (No Document) --</option>
                     {documents.map((doc, idx) => (
                       <option key={idx} value={doc.document_id}>
                         {doc.title}
@@ -506,10 +530,13 @@ export default function Dashboard() {
                   <div className="h-full flex flex-col items-center justify-center text-slate-400">
                     <svg className="w-16 h-16 mb-4 text-blue-100" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-12h2v6h-2zm0 8h2v2h-2z"></path></svg>
                     <p className="text-lg font-medium text-slate-600">
-                      {sessionId ? (isChatLoading ? "Loading past conversation..." : "Start your conversation.") : "How can I help you with this document?"}
+                      {sessionId 
+                        ? (isChatLoading ? "Loading past conversation..." : "Start your conversation.") 
+                        : (selectedDocId ? "How can I help you with this document?" : "How can I help you today?")
+                      }
                     </p>
                     <p className="text-sm mt-1">
-                      {sessionId ? "" : "Select a document from the dropdown above and ask a question."}
+                      {sessionId ? "" : "Select a document to analyze, or ask a general legal question."}
                     </p>
                   </div>
                 ) : (
@@ -546,13 +573,13 @@ export default function Dashboard() {
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                    disabled={!selectedKbId || isChatLoading}
-                    placeholder={selectedKbId ? "Ask a question about the document..." : "Please select a document first..."}
+                    disabled={isChatLoading}
+                    placeholder={selectedDocId ? "Ask a question about the document..." : "Ask a general legal question..."}
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-5 pr-14 py-4 text-sm focus:outline-none focus:border-blue-700 focus:bg-white shadow-sm disabled:bg-slate-100 disabled:cursor-not-allowed"
                   />
                   <button 
                     onClick={handleSendMessage}
-                    disabled={!chatInput.trim() || !selectedKbId || isChatLoading}
+                    disabled={!chatInput.trim() || isChatLoading}
                     className="absolute right-3 p-2 bg-blue-700 hover:bg-blue-800 text-white rounded-lg transition-colors disabled:bg-slate-300 disabled:cursor-not-allowed"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>

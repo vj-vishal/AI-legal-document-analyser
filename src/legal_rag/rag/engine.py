@@ -544,7 +544,7 @@ class HybridRerankRetriever(BaseRetriever):
 
         # 2. Conditionally retrieve from User Stores
         dense_usr_docs = []
-        bm25_usr_docs = []
+        bm25_usr_docs = [] 
 
         # Only proceed with user stores if at least user_id and kb_id are provided
         if user_id and kb_id and kb_document_id:

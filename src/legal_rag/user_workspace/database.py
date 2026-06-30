@@ -170,9 +170,6 @@ def get_user_by_email(engine, email: str) -> dict | None:
             logging.error(f"Database error during retrieval for {email}: {str(e)}")
             return None
         
-
-        
-
 # def load_user_data(engine,name: str, email: str, password_hash: str, role: str) -> str:
 #     """
 #     Reflects the existing table and inserts the provided user data.

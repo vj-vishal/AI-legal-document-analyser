@@ -197,7 +197,7 @@ def log_analysis_record(engine, user_id: str, kb_document_id: str, session_id: s
 def get_chat_session_view(engine, user_id: str | UUID) -> list[dict]:
     with Session(engine) as db:
         try:
-            query = select(ChatSessions).where(ChatSessions.user_id == user_id).order_by(ChatSessions.updated_at.desc())
+            query = select(ChatSessions).where(ChatSessions.user_id == user_id)#.order_by(ChatSessions.updated_at.desc())
             result = db.execute(query)
 
             docs = result.scalars().all()
@@ -218,4 +218,17 @@ def get_chat_message(engine, session_id: str | UUID) -> list[dict]:
 
         except Exception as e:
             logging.error(f"Database error during retrieval of user documents for {session_id}: {str(e)}")
+            return None
+
+def get_user_profile(engine, user_id: str | UUID) -> list[dict]:
+    with Session(engine) as db:
+        try:
+            query = select(Users).where(Users.id == user_id)
+            result = db.execute(query)
+
+            docs = result.scalars().first()
+            return docs
+
+        except Exception as e:
+            logging.error(f"Database error during retrieval of user documents for {user_id}: {str(e)}")
             return None
