@@ -234,7 +234,7 @@ export default function Dashboard() {
             ⚖️
           </div>
           <div>
-            <h1 className="text-xl font-bold text-slate-900 tracking-tight leading-tight">AndhaKanoon</h1>
+            <h1 className="text-xl font-bold text-slate-900 tracking-tight leading-tight">ApnaKanoon</h1>
             <p className="text-[10px] text-blue-700 font-bold uppercase tracking-wider">Legal Intelligence</p>
           </div>
         </div>
@@ -369,7 +369,7 @@ export default function Dashboard() {
                     <div>
                       {/* UPDATED: Dynamic welcome text */}
                       <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Welcome {userName}! <span className="text-xs align-middle bg-slate-100 px-2 py-1 rounded-md text-slate-600 ml-2 font-semibold border border-slate-200">Free Tier</span></h2>
-                      <p className="text-slate-600 mt-1 font-medium">Welcome to your AndhaKanoon workspace</p>
+                      <p className="text-slate-600 mt-1 font-medium">Welcome to your ApnaKanoon workspace</p>
                     </div>
                   </div>
                   <div className="flex gap-3 relative z-10">
@@ -378,7 +378,7 @@ export default function Dashboard() {
                       className="flex items-center gap-2 px-5 py-2.5 bg-white hover:bg-slate-50 text-slate-700 rounded-lg font-semibold transition-colors border border-slate-200 shadow-sm"
                     >
                       <svg className="w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
-                      Upload Case File
+                      Upload File
                     </button>
                     <button 
                       onClick={() => { setActiveView('chat'); setChatMessages([]); setSessionId(null); setSelectedDocId(''); setSelectedKbId(''); }}

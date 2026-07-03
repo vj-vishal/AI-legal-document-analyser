@@ -11,12 +11,12 @@ export default function LandingPage() {
           <div className="w-8 h-8 bg-blue-700 text-white flex items-center justify-center rounded-lg font-bold text-xl">
             ⚖️
           </div>
-          <span className="text-2xl font-bold text-slate-900 tracking-tight">AndhaKanoon</span>
+          <span className="text-2xl font-bold text-slate-900 tracking-tight">ApnaKanoon</span>
         </div>
         <div className="hidden md:flex space-x-8 text-sm font-medium text-slate-600">
           <a href="#features" className="hover:text-blue-700 transition-colors">Features</a>
           <a href="#how-it-works" className="hover:text-blue-700 transition-colors">How it Works</a>
-          <a href="#pricing" className="hover:text-blue-700 transition-colors">Pricing</a>
+          {/* <a href="#pricing" className="hover:text-blue-700 transition-colors">Pricing</a> */}
         </div>
         <div className="flex items-center space-x-4 text-sm font-medium">
           {/* THESE ARE THE UPDATED LINKS */}
@@ -96,7 +96,7 @@ export default function LandingPage() {
       <footer className="bg-white py-12 border-t border-slate-200 text-center">
         <div className="flex items-center justify-center space-x-2 mb-4">
           <div className="w-6 h-6 bg-blue-700 text-white flex items-center justify-center rounded font-bold text-xs">⚖️</div>
-          <span className="text-xl font-bold text-slate-900">AndhaKanoon</span>
+          <span className="text-xl font-bold text-slate-900">ApnaKanoon</span>
         </div>
         <p className="text-slate-500 text-sm">© 2026 Legal AI Platform. Built for Indian Law.</p>
       </footer>

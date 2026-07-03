@@ -18,6 +18,7 @@ from fastapi import Depends, HTTPException, status
 import logging
 from dotenv import load_dotenv
 import traceback
+from src.legal_rag.guardrails.pre_guardrail import run_guardrail
 
 load_dotenv()
 
@@ -207,12 +208,22 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
             is_new_session = True
 
         # 2. Log User Query immediately to the current session
-        # (Pass actual token counts if you have a tokenizer, or update later)
         log_user_query(engine, session_id=session_id, query=query, token=25)
 
         # 3. Dynamic Titling (Only triggers on the very first message)
         if is_new_session:
             update_session_title(engine, session_id, first_user_message=query)
+
+        initial_response= run_guardrail(query)
+        if initial_response.get("gate")=="fail":
+            response_text= initial_response.get("response")
+            log_ai_response(engine, session_id, response_text, tokens=213)
+            return {
+                "status": "fail",
+                "session_id": session_id,
+                "message": "Guardrail triggered. Query not processed.",
+                "answer": response_text
+            }
 
         # 4. Fetch Conversation Memory (Crucial for multi-turn chat)
         chat_history = get_chat_history(engine, session_id, limit=5)
