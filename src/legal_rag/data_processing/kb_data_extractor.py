@@ -89,21 +89,6 @@ def remove_synopsis_block(text):
 # ─────────────────────────────────────────
 
 def remove_ocr_citation_footnotes(text):
-    # Pattern Breakdown:
-    # 1. OCR Number Handling:
-    #    [\[\(-]*  -> Matches optional leading brackets, parentheses, or dashes (e.g., "[", "(", "-")
-    #    \s*       -> Matches optional stray spaces before the number
-    #    \d+       -> Matches the actual numbers (e.g., "32")
-    #    \s*       -> Matches optional spaces after the number
-    #    [\]\)-]*  -> Matches optional closing brackets, parentheses, or dashes (e.g., "]", ")")
-    #    \.?       -> Matches an optional dot (e.g., ".")
-    #    \s+       -> Matches the space(s) before the actual text begins
-    #
-    # 2. Safety Bounds & Keywords:
-    #    (?:(?!@@PAGE).)*?                          -> Safely scans text without jumping past a page tag
-    #    \b(?:v|vs|AIR|SCC|Cr LJ|SC|All LJ|Edn|Ker)\b   -> MUST contain a citation keyword ("v" or "vs" are great anchors)
-    #    (?:(?!@@PAGE).)*?                          -> Matches the rest of the citation
-    #    @@PAGE_\d+@@\s*                            -> Ends strictly at the page marker
     
     pattern = r"[\[\(-]*\s*\d+\s*[\]\)-]*\.?\s+(?:(?!@@PAGE).)*?\b(?:v|vs|AIR|SCC|Cr LJ|SC|All LJ|Edn|Ker)\b(?:(?!@@PAGE).)*?@@PAGE_\d+@@"
     
@@ -260,10 +245,6 @@ def process_document(raw_text, regex_engine):
                     if parent_l2 and parent_l2 not in seen_l2:
                         markdown_lines.append(f"## @@H2@@ {parent_l2}")
                         seen_l2.add(parent_l2)
-
-                # # --- 1. INJECT THE PERFECT MARKDOWN HEADER ---
-                # # This guarantees "35. Costs." instead of the ugly "*[35. Costs. -( 1 )"
-                # markdown_lines.append(rule["markdown"])
 
                 # --- 1. INJECT THE PERFECT MARKDOWN HEADER WITH TROJAN TAG ---
                 # Replacing rule["markdown"] to dynamically inject the exact level tag

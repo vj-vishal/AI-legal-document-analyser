@@ -182,14 +182,6 @@ if __name__ == "__main__":
 
         full_text = "\n".join(text for text in output["pages"])
 
-        # print(f"File         : {output['file']}")
-        # print(f"Methods used : {output['method_used']}")
-        # print(f"Tables found : {len(output['tables'])} page(s) with tables")
-        # if output["errors"]:
-        #     print(f"Errors       : {output['errors']}")
-        # print("-" * 60)
-        # print(full_text)
-        # raw_data = full_text
         enhanced_data = enhance_structural_metadata(full_text, pdf["pdf_name"])
         data.append(enhanced_data)
 

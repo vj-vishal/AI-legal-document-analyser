@@ -4,6 +4,12 @@ import src.legal_rag.config as config
 from src.legal_rag.kb.api_integration import IndianKanoonClient, clean_fragment, retrieve_from_kanoon
 from langchain_huggingface import HuggingFaceEmbeddings
 from src.legal_rag.kb.llm_as_judge import RetrievalDecisionManager, GroqRetrievalJudge
+from  dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+user_kb_id = os.getenv("USER_KB_ID")
 
 
 class KnowledgeBaseManager:
@@ -28,7 +34,7 @@ class KnowledgeBaseManager:
             embeddings=self.embeddings
         )
         self.user_pipeline = RAGPipeline(
-            collection_name="0d3493be-c6b9-47dd-9387-7301b812b52a",
+            collection_name=user_kb_id,
             embeddings=self.embeddings
         )
 
@@ -40,7 +46,7 @@ class KnowledgeBaseManager:
 
         # BM25 sparse retriever(users documents)
         bm25_user = BM25sDiskRetriever.load_from_disk(
-            str(config.BM25_INDEX_DIR / "0d3493be-c6b9-47dd-9387-7301b812b52a")
+            str(config.BM25_INDEX_DIR / user_kb_id)
         )
         bm25_user.k = config.BM25_K
 
@@ -92,32 +98,4 @@ class KnowledgeBaseManager:
         else:
             return []
 
-
-if __name__ == "__main__":
-    query = """Under Section 60, which properties of a judgment-debtor are exempt from attachment and sale during execution of a decree?"""
-    pipeline = KnowledgeBaseManager()
-    results = pipeline.route_and_retrieve(query, user_id= "6544c0d7-aa3c-4dc9-b0aa-faed878d7ff3", kb_id= "0d3493be-c6b9-47dd-9387-7301b812b52a", kb_document_id= "3ce373ed-0ab6-4f7a-b55b-720e2a9445a6")
-    print(results)
-    # results= pipeline.route_and_retrieve(query)
-    # print(results)
-    # print(50*"==")
-    # for r in results:     
-    #     print(r.page_content)
-    #     print(r.metadata)
-    #     print(50 * "=")
-    # query = "Give me Non rent agreement template"
-    # results = routing(query)
-    # for r in results:
-    #     print(r.page_content)
-    #     print(r.metadata)
-    #     print(50 * "=")   
     
-    # query = "Within what period can an applicant appeal a decision to reject their legal aid application?"
-    # results = template_retriever(query)
-    # knowledge_base_retriever(query, str(config.BM25_INDEX_DIR / "knowledge_base"))
-    # results = knowledge_base_retriever(query, str(config.BM25_INDEX_DIR / "knowledge_base")) 
-    # print(results)
-    # for r in results:
-    #     print(r.page_content)
-    #     print(r.metadata)
-    #     print(50 * "=")   

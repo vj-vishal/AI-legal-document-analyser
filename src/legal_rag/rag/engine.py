@@ -227,35 +227,6 @@ user_template = """
 """
 
 
-# ─────────────────────────────────────────────
-# Debugging Callback
-# ─────────────────────────────────────────────
-
-# class LLMInspectorCallback(BaseCallbackHandler):
-#     def on_llm_start(self, serialized, prompts, **kwargs):
-#         print("\n" + "="*60)
-#         print(f"[LLM INPUT] Model: {serialized.get('name')}")
-#         print(f"[DOCS + PROMPT SENT]:\n")
-#         for i, p in enumerate(prompts):
-#             print(f"--- Prompt {i+1} ---\n{p}\n")
-#         print("="*60)
-
-#     def on_llm_end(self, response, **kwargs):
-#         print(f"\n[LLM OUTPUT]: {response.generations[0][0].text[:300]}...")
-
-
-# ─────────────────────────────────────────────
-# Per-User BM25 Retriever with Disk Persistence
-# ─────────────────────────────────────────────
-
-# Assuming necessary imports from your environment:
-# from langchain_core.retrievers import BaseRetriever
-# from langchain_core.callbacks import CallbackManagerForRetrieverRun
-# from langchain_core.documents import Document
-# from pydantic import ConfigDict
-# import bm25s as _bm25s
-# import config
-
 class BM25sDiskRetriever(BaseRetriever):
     """
     LangChain-compatible BM25 retriever backed by bm25s with full disk persistence
@@ -462,23 +433,12 @@ class HybridRerankRetriever(BaseRetriever):
             search_kwargs={"k": config.DENSE_K}
         )
 
-        # ensemble = EnsembleRetriever(retrievers=[dense_internal, dense_user, bm25_internal, bm25_user],
-        #                              weights=[0.25, 0.25, 0.25, 0.25]
-        #                              )
-        # reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-
-        # reranker = FlagReranker(
-        #     "BAAI/bge-reranker-v2-m3",
-        #     use_fp16=True,       
-        #     device="cuda"        
-        # )
-
         reranker = CrossEncoder(
             "BAAI/bge-reranker-v2-m3",
-            device="cuda",                         # or "cpu"
-            max_length=1024,                       # recommended by BAAI [web:170]
+            device="cuda",                         
+            max_length=1024,                       
             default_activation_function=None,
-            model_kwargs={"torch_dtype": torch.float16},  # fp16 to save VRAM
+            model_kwargs={"torch_dtype": torch.float16},  
 )
 
         return cls(
@@ -500,42 +460,6 @@ class HybridRerankRetriever(BaseRetriever):
         kb_document_id: str = None
     ) -> List[Document]:
 
-        # docs = self.ensemble.invoke(query)
-
-        # if not docs:
-        #     return []
-
-        # # 1. Build the Chroma-specific native filter
-        # chroma_filter = {
-        #     "$and": [
-        #         {"user_id": user_id},
-        #         {"kb_id": kb_id},
-        #         {"kb_document_id": kb_document_id}  # Ensure this key matches your ingestion schema
-        #     ]
-        # }
-
-        # # 2. Retrieve from Dense Stores with localized, thread-safe filters
-        # # We access the underlying vectorstore directly to avoid modifying shared state
-        # dense_int_docs = self.dense_internal.vectorstore.similarity_search(
-        #     query, k=config.DENSE_K
-        # )
-        # # print(f"Dense Internal Docs Retrieved: {dense_int_docs}")
-        # # print(50*"===")
-
-        # dense_usr_docs = self.dense_user.vectorstore.similarity_search(
-        #     query, k=config.DENSE_K, filter=chroma_filter
-        # )
-        # # print(f"Dense User Docs Retrieved: {dense_usr_docs}")
-        # # print(50*"===")
-
-        # bm25_int_docs = self.bm25_internal.invoke(query)
-        # # print(f"BM25 Internal Docs Retrieved: {bm25_int_docs}")
-        # # print(50*"===")
-
-        # bm25_usr_docs = self.bm25_user.invoke(query, user_id=user_id, kb_id=kb_id, document_id=kb_document_id)
-        # print(f"BM25 User Docs Retrieved: {bm25_usr_docs}")
-        # print(50*"===")
-
         # 1. Always retrieve from Internal Stores
         dense_int_docs = self.dense_internal.vectorstore.similarity_search(
             query, k=config.DENSE_K
@@ -554,8 +478,6 @@ class HybridRerankRetriever(BaseRetriever):
                 {"kb_id": kb_id},
                 {"kb_document_id": kb_document_id}
             ]
-            # if kb_document_id:
-            #     filter_conditions.append({"kb_document_id": kb_document_id})
 
             # Chroma requires a specific format: direct dict for 1 condition, $and for multiple
             if len(filter_conditions) > 1:
@@ -595,16 +517,6 @@ class HybridRerankRetriever(BaseRetriever):
         ranked = sorted(zip(unique_docs, scores), key=lambda x: x[1], reverse=True)
         return [doc for doc, _ in ranked[:config.RERANK_TOP_K]]
 
-        # added just for checking the scores
-        # top = ranked[:config.RERANK_TOP_K]
-        # out_docs = []
-        # for doc, score in top:
-        #     meta = dict(doc.metadata) if doc.metadata else {}
-        #     meta["rerank_score"] = float(score)
-        #     doc.metadata = meta
-        #     out_docs.append(doc)
-
-        # return out_docs
     
     def debug_sources(self, query: str, user_id: str , kb_id: str, kb_document_id: str) -> Tuple[List[Document], List[Document]]:
         """
@@ -653,14 +565,7 @@ class RAGPipeline:
 
         self.lc_docs: List[Document] = []
         self.retriever: HybridRerankRetriever | None = None
-        # self.chain: RetrievalQAWithSourcesChain | None = None
-
-        # Auto-recovery on server restart:
-        # If the user's BM25 index exists on disk, Chroma already has their
-        # vectors too. Reload both so queries work immediately without re-uploading.
-        # if (Path(self._bm25_path) / "corpus_docs.pkl").exists():
-        #     self._load_docs_from_store()
-        #     self._load_retriever_and_chain()
+        
 
     # ─────────────────────────────────────────
     # Internal: restore state from disk (server restart path)
@@ -718,13 +623,6 @@ class RAGPipeline:
                 meta = entry.get("metadata", {})
 
                 meta = self.sanitize_metadata(meta)
-
-                # meta = {
-                #     "id":               entry.get("chunk_id") or "",
-                #     "title":            entry.get("structural_path") or "",
-                #     "source":           raw_meta.get("source_file") or "",
-                #     "page":             raw_meta.get("page") or 0
-                # }
 
                 doc = Document(page_content=entry["page_content"], metadata=meta)
 

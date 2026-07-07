@@ -12,16 +12,10 @@ from transformers import AutoTokenizer
 # LangChain Imports
 from langchain_core.documents import Document
 from langchain_chroma import Chroma
-# from langchain_huggingface import HuggingFaceEmbeddings
-# from langchain_groq import ChatGroq
-# from langchain_core.prompts import ChatPromptTemplate
 
 # Pydantic
 from pydantic import BaseModel, Field
-# import src.legal_rag.config as config
-# from src.legal_rag.user_workspace.key_value_extraction import _clean_json, extract_data_from_raw_text
 
-# Load environment variables
 load_dotenv()
 
 # ==========================================
@@ -79,12 +73,3 @@ if __name__ == "__main__":
     chunks = chunk_to_langchain_documents(parse_doc, "data/intermediate/batches/batch_31_to_40.pdf", "550e8400-e29b-41d4-a716-446655440000", "550e8400-e29b-41d4-a716-446655440001", "550e8400-e29b-41d4-a716-446655440002")
 
     print(chunks)
-
-    # with open(config.CHUNK_JSON, "w", encoding="utf-8") as f:
-    #     json.dump(chunks, f, indent=2)
-
-    # raw_text= parse_doc.export_to_text()
-    # extracted_data = extract_data_from_raw_text(raw_text)
-
-    # with open(config.KEY_DATA_JSON, "w", encoding="utf-8") as f:
-    #     json.dump(extracted_data, f, indent=2)

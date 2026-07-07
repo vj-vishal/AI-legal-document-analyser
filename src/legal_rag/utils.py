@@ -1,4 +1,5 @@
 from typing import List
+import tiktoken
 
 def format_data(chunks: List):
     formatted_chunks = []
@@ -35,3 +36,17 @@ def format_data(chunks: List):
         formatted_chunks.append(formatted_data)
     
     return formatted_chunks
+
+def count_tokens_locally(text: str, model_name: str = "gpt-4o") -> int:
+    """
+    Counts the number of tokens in a text string locally without calling an API.
+    """
+    # 1. Get the encoding specific to the model
+    # (gpt-4o and gpt-4 use the 'o200k_base' or 'cl100k_base' encodings)
+    encoding = tiktoken.encoding_for_model(model_name)
+    
+    # 2. Encode the text into a list of integers (token IDs)
+    token_list = encoding.encode(text)
+    
+    # 3. Return the total count
+    return len(token_list)

@@ -103,30 +103,6 @@ def retrieve_from_kanoon(query: str, client: IndianKanoonClient) -> list[dict]:
 
     return chunks
 
-# def retrieve_from_kanoon(query: str, client: IndianKanoonClient) -> list[dict]:
-#     results = client.search(query, page=0)
-#     docs = results.get("docs", [])
-    
-#     chunks = []
-#     for doc in docs[:3]:  # Top 3 results only
-#         if doc.get("fragment") is not True:
-#             continue  # Skip if no fragment available
-#         else:
-#             doc_id = doc["tid"]
-#             fragment = client.get_fragment(doc_id, query)
-#             clean_data = clean_fragment(fragment)
-#             meta = client.get_meta(doc_id)
-            
-#             chunks.append({
-#                 "text": clean_data.get("text", ""),
-#                 "source": meta.get("title", ""),
-#                 "court": meta.get("doctype", ""),
-#                 "date": meta.get("publishdate", ""),
-#                 "doc_id": doc_id,
-#                 "url": f"https://indiankanoon.org/doc/{doc_id}/"
-#             })
-    
-#     return chunks
 
 if __name__ == "__main__":
 
@@ -134,23 +110,3 @@ if __name__ == "__main__":
 
     doc = retrieve_from_kanoon("""briefly explain section 302 and its punishment?""", client)
     print(doc)
-
-    # results = client.search("Who is eligible to receive legal services according to Section 12 of the Legal Services Authorities Act, 1987?", page=0)
-    # print(results)
-
-    # fragment = client.get_fragment(76615865, "Who is eligible to receive legal services according to Section 12 of the Legal Services Authorities Act, 1987?")
-    # print(fragment)
-
-    # meta = client.get_meta(753911)
-    # print(meta)
-
-
-
-    # query = "What are the specific financial and administrative responsibilities of the Secretary of the Committee under Regulation 8?"
-    # results = retrieve_from_kanoon(query)
-    # print(results)
-    # for r in results:
-    #     print(f"Source: {r['source']} ({r['court']}, {r['date']})")
-    #     print(f"URL: {r['url']}")
-    #     print(f"Text: {r['text'][:200]}...")
-    #     print(50 * "=")

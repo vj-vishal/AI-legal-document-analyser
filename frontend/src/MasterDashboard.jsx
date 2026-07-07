@@ -5,6 +5,8 @@ import api from './api';
 export default function Dashboard() {
   // --- USER STATE ---
   const [userName, setUserName] = useState(''); // State to hold dynamic user name
+  const [creditsLeft, setCreditsLeft] = useState('...'); // NEW: State to hold dynamic rate limit credits
+  // const [dailyLimit, setDailyLimit] = useState(1000); // NEW: State to hold daily limit for calculations
 
   // --- NAVIGATION STATE ---
   const [activeView, setActiveView] = useState('home'); // 'home' | 'documents' | 'chat'
@@ -59,8 +61,25 @@ export default function Dashboard() {
       }
     };
 
+    // NEW: Fetch initial rate limit status
+    const fetchCredits = async () => {
+      try {
+        const response = await api.get('/rate_limit_status'); 
+        if (response.status === 200) {
+          setCreditsLeft(response.data.remaining_credits ?? '...');
+          // if (response.data.daily_limit) {
+          //   setDailyLimit(response.data.daily_limit);
+          // }
+        }
+      } catch (error) {
+        console.error("Failed to fetch credits:", error);
+        setCreditsLeft('...'); // Fallback
+      }
+    };
+
     fetchProfile();
     fetchChatSessions();
+    fetchCredits(); // NEW: Trigger initial credits fetch
   }, []);
 
   // --- FETCH DOCUMENTS EFFECT ---
@@ -132,7 +151,14 @@ export default function Dashboard() {
     } catch (error) {
       console.error("Upload failed:", error);
       setUploadState('error');
+      // NEW: Specific handling for 429 Rate Limit Exceeded
+      if (error.response && error.response.status === 429) {
+        const errorMessage = error.response.data?.detail || "Rate limit exceeded. Please try again later.";
+        alert(`Upload blocked: ${errorMessage}`);
+      } else {
+        // Existing generic error fallback
       alert("Failed to upload the file. Please check your backend.");
+      }
     } finally {
       if (uploadState !== 'error') setTimeout(() => setUploadState('idle'), 3000);
     }
@@ -202,11 +228,17 @@ export default function Dashboard() {
 
     try {
       const response = await api.post('/chat', payload);
-      
+
       if (response.status === 200) {
         const botMsg = { role: 'assistant', content: response.data.answer || response.data.message };
         setChatMessages(prev => [...prev, botMsg]);
         
+        // NEW: The backend returns 'day_adjusted_token' which is the total USED tokens. 
+        // We subtract that from the dailyLimit to display the remaining free credits.
+        if (response.data.day_adjusted_token !== undefined) {
+          setCreditsLeft(Math.max(0, response.data.day_adjusted_token));
+        }
+
         if (response.data.session_id) {
           if (!sessionId) {
             setSessionId(response.data.session_id);
@@ -218,7 +250,21 @@ export default function Dashboard() {
       }
     } catch (error) {
       console.error("Chat error:", error);
+
+      if (error.response && error.response.status === 429) {
+        // NEW: If rate limit is hit, set credits to 0
+        setCreditsLeft(0);
+
+        // Extract the specific "detail" message from your backend JSON
+        const errorMessage = error.response.data?.detail || "Rate limit exceeded. Please try again later.";
+        
+        setChatMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: `Error: ${errorMessage}` 
+        }]);
+      } else {
       setChatMessages(prev => [...prev, { role: 'assistant', content: "Error: Could not connect to the chat service. Please try again." }]);
+      }
     } finally {
       setIsChatLoading(false);
     }
@@ -341,8 +387,9 @@ export default function Dashboard() {
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
               Upload
             </button>
+            {/* UPDATED: Dynamic credits display */}
             <div className="flex items-center gap-2 text-sm bg-slate-50 px-3 py-1.5 rounded-full border border-slate-200 font-medium">
-              <span className="text-blue-700">🪙</span> 100 free left
+              <span className="text-blue-700">🪙</span> {creditsLeft} free left
             </div>
             {/* UPDATED: Dynamic user avatar */}
             <div className="w-9 h-9 rounded-full bg-blue-700 text-white font-bold flex items-center justify-center shadow-sm">

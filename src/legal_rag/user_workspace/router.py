@@ -19,10 +19,21 @@ import logging
 from dotenv import load_dotenv
 import traceback
 from src.legal_rag.guardrails.pre_guardrail import run_guardrail
+from src.legal_rag.utils import count_tokens_locally
+from src.legal_rag.rate_limit.usage_limiter import check_and_reserve, adjust_actual_usage, _day_key, _month_key
+from src.legal_rag.rate_limit.config import FREE_LIMITS, ESTIMATED_CHAT_COST
+from src.legal_rag.rate_limit.redis_client import redis_client
+import redis
 
 load_dotenv()
 
 INTERNAL_KB_ID = os.getenv("INTERNAL_KB_ID")
+
+redis_client = redis.Redis(
+    host=os.getenv("REDIS_HOST", "localhost"),
+    port=int(os.getenv("REDIS_PORT", 6379)),
+    decode_responses=True,
+)
 
 # ─── Signup ───────────────────────────────────────────────
 
@@ -84,6 +95,15 @@ def login(req: LoginRequest):
 @app.post("/load_kb")
 def load_kb(file: Annotated[UploadFile, File()],
             user_id: str = Depends(get_current_user_id)):
+    
+    # ── rate limit check: upload quota ──
+    check_and_reserve(
+        user_id=user_id,
+        resource="upload",
+        amount=1,
+        daily_limit=FREE_LIMITS["upload_daily"],
+        monthly_limit=FREE_LIMITS["upload_monthly"],
+    )
     
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
@@ -174,7 +194,7 @@ def user_kb_docs( user_id: str = Depends(get_current_user_id)):
             detail=f"An error occurred while retrieving user documents: {str(e)}"
         )
 
-# 1. Define the Expected JSON Payload Structure
+# Define the Expected JSON Payload Structure
 class ChatRequest(BaseModel):
     query: str
     knowledge_base_id: Optional[str] = None
@@ -183,6 +203,15 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat")
 def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
+
+    # ── rate limit check: chat token quota (pre-check with estimate) ──
+    check_and_reserve(
+        user_id=user_id,
+        resource="chat_tokens",
+        amount=ESTIMATED_CHAT_COST,
+        daily_limit=FREE_LIMITS["chat_tokens_daily"],
+        monthly_limit=FREE_LIMITS["chat_tokens_monthly"],
+    )
     
     # 2. Unpack the variables so the rest of your code works perfectly without changes
     query = request.query
@@ -207,9 +236,6 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
             )
             is_new_session = True
 
-        # 2. Log User Query immediately to the current session
-        log_user_query(engine, session_id=session_id, query=query, token=25)
-
         # 3. Dynamic Titling (Only triggers on the very first message)
         if is_new_session:
             update_session_title(engine, session_id, first_user_message=query)
@@ -217,16 +243,29 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
         initial_response= run_guardrail(query)
         if initial_response.get("gate")=="fail":
             response_text= initial_response.get("response")
-            log_ai_response(engine, session_id, response_text, tokens=213)
+            log_ai_response(engine, session_id, response_text, tokens=query_token_count)
+            # ── refund the reserved estimate since LLM was never called ──
+            day_adjusted_token, month_adjusted_token= adjust_actual_usage(user_id, "chat_tokens", delta=-ESTIMATED_CHAT_COST)
             return {
                 "status": "fail",
                 "session_id": session_id,
                 "message": "Guardrail triggered. Query not processed.",
-                "answer": response_text
+                "answer": response_text,
+                "day_adjusted_token": FREE_LIMITS["chat_tokens_daily"] - day_adjusted_token,
+                "month_adjusted_token": FREE_LIMITS["chat_tokens_monthly"] - month_adjusted_token
             }
 
         # 4. Fetch Conversation Memory (Crucial for multi-turn chat)
         chat_history = get_chat_history(engine, session_id, limit=5)
+
+        history_token_count = count_tokens_locally(chat_history, model_name="gpt-4o") 
+
+        query_token_count = count_tokens_locally(query, model_name="gpt-4o") 
+
+        total_estimated_tokens = query_token_count + history_token_count 
+
+        # 2. Log User Query immediately to the current session
+        log_user_query(engine, session_id=session_id, query=query, token=total_estimated_tokens)
 
         # 5. Execute RAG Pipeline / LLM Orchestration
         # Pass chat_history into your orchestrator so the LLM remembers previous turns
@@ -238,8 +277,14 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
             chat_history=chat_history 
         )
 
+        response_token_count = count_tokens_locally(response_text, model_name="gpt-4o") 
+
         # 6. Log AI Response & Audit Trail
-        log_ai_response(engine, session_id, response_text, tokens=213)
+        log_ai_response(engine, session_id, response_text, tokens=response_token_count)
+
+        # ── correct the reservation with actual tokens used ──
+        actual_tokens = query_token_count + response_token_count + history_token_count 
+        day_adjusted_token, month_adjusted_token = adjust_actual_usage(user_id, "chat_tokens", delta=actual_tokens - ESTIMATED_CHAT_COST)
 
         # Only log to the audit analysis table if they are actually querying a document
         if knowledge_base_id and kb_document_id:
@@ -259,7 +304,9 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
             "status": "success",
             "session_id": session_id, # Send this back so frontend knows what ID to use next time
             "message": "Data logged successfully",
-            "answer": response_text
+            "answer": response_text,
+            "day_adjusted_token": FREE_LIMITS["chat_tokens_daily"] - day_adjusted_token,
+            "month_adjusted_token": FREE_LIMITS["chat_tokens_monthly"] - month_adjusted_token
         }
 
     # except HTTPException as he:
@@ -350,3 +397,43 @@ def user_profile(user_id: str = Depends(get_current_user_id)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"An error occurred while retrieving user profile: {str(e)}"
         )
+    
+@app.get("/rate_limit_status")
+async def get_rate_limit_status(user_id: str = Depends(get_current_user_id)):
+    """
+    Fetches the current remaining chat credits for the logged-in user.
+    """
+    resource = "chat_queries" 
+    day_limit = 1000
+    
+    try:
+        # 2. Construct the exact Redis key
+        day_key = _day_key(user_id=user_id, resource=resource)
+        
+        # 3. Fetch the current usage from Redis
+        used_day = redis_client.get(day_key)
+        
+        # 4. Calculate the remaining credits
+        if used_day is None:
+            # Key doesn't exist yet, meaning 0 queries used this day
+            remaining_credits = day_limit
+            used_amount = 0
+        else:
+            used_amount = int(used_day)
+            remaining_credits = max(0, day_limit - used_amount)
+
+        return {
+            "status": "success",
+            "remaining_credits": remaining_credits,
+            "used_credits": used_amount,
+            "daily_limit": day_limit
+        }
+
+    except Exception as e:
+        # Fallback to prevent UI crash if Redis is temporarily unreachable
+        print(f"Redis connection error: {e}")
+        return {
+            "status": "error",
+            "remaining_credits": day_limit, 
+            "detail": "Could not fetch current usage."
+        }

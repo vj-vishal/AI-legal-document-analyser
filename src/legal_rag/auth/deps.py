@@ -2,9 +2,7 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from src.legal_rag.auth.jwt import decode_token
 
-# OAuth2PasswordBearer tells FastAPI:
-# "Look for a Bearer token in the Authorization header"
-# tokenUrl="/auth/login" tells FastAPI's /docs UI where the login endpoint is
+
 bearer_scheme = HTTPBearer()
 
 
