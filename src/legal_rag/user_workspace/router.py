@@ -23,7 +23,10 @@ from src.legal_rag.utils import count_tokens_locally
 from src.legal_rag.rate_limit.usage_limiter import check_and_reserve, adjust_actual_usage, _day_key, _month_key
 from src.legal_rag.rate_limit.config import FREE_LIMITS, ESTIMATED_CHAT_COST
 from src.legal_rag.rate_limit.redis_client import redis_client
+from src.legal_rag.user_workspace.worker import run_heavy_ingestion_task
 import redis
+import magic
+from pathlib import Path
 
 load_dotenv()
 
@@ -92,10 +95,54 @@ def login(req: LoginRequest):
     return TokenResponse(access_token=token, token_type="bearer")
 
 
-@app.post("/load_kb")
+@app.post("/load_kb", status_code=status.HTTP_202_ACCEPTED)
 def load_kb(file: Annotated[UploadFile, File()],
             user_id: str = Depends(get_current_user_id)):
     
+    # if file.content_type != "application/pdf":
+    #     raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    MAX_FILE_SIZE = 2 * 1024 * 1024  # 10 MB
+
+    file.file.seek(0, 2)          # Go to end
+    file_size = file.file.tell()  # Get size
+    file.file.seek(0)             # Reset
+
+    if file_size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail="PDF exceeds the maximum allowed size of 2 MB."
+        )
+    
+    file_path = Path(file.filename)
+    suffixes = file_path.suffixes
+    
+    # Reject double extensions immediately before even reading the file
+    if len(suffixes) > 1:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Double extensions are not allowed. Found: {''.join(suffixes)}"
+        )
+        
+    # Ensure the only extension is exactly .pdf
+    if not suffixes or suffixes[0].lower() != '.pdf':
+        raise HTTPException(
+            status_code=400, 
+            detail=f"File must end with exactly .pdf"
+        )
+    
+    header = file.file.read(1024)
+
+    true_mime_type = magic.from_buffer(header, mime=True)
+
+    if true_mime_type != "application/pdf":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only PDF files are allowed. Detected type: {true_mime_type}"
+        )
+
+    file.file.seek(0)
+
     # ── rate limit check: upload quota ──
     check_and_reserve(
         user_id=user_id,
@@ -104,13 +151,8 @@ def load_kb(file: Annotated[UploadFile, File()],
         daily_limit=FREE_LIMITS["upload_daily"],
         monthly_limit=FREE_LIMITS["upload_monthly"],
     )
-    
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
     pdf_bytes = file.file.read()
-    if not pdf_bytes:
-        raise HTTPException(status_code=400, detail="Empty PDF uploaded")
     
     try:
         # 3. RUN FUNCTION 1: Get data with verified user_id from the token
@@ -138,23 +180,42 @@ def load_kb(file: Annotated[UploadFile, File()],
         with open(safe_file_path, "wb") as local_file:
             local_file.write(pdf_bytes)
 
-        orchestrator(
-            pdf_path=safe_file_path,
-            collection_name=str(kb_id), 
-            kb_document_id=str(doc_id),
+        # orchestrator(
+        #     pdf_path=safe_file_path,
+        #     collection_name=str(kb_id), 
+        #     kb_document_id=str(doc_id),
+        #     kb_id=str(kb_id),
+        #     user_id=str(user_id)
+        # )
+
+        # update_document_status(engine, document_id=doc_id)
+
+        # return {
+        #     "status": "success",
+        #     "message": "File saved locally and successfully ingested into the vector database.",
+        #     "data": {
+        #         "knowledge_base_id": str(kb_id),
+        #         "document_id": str(doc_id),
+        #         "saved_path": safe_file_path
+        #     }
+        # }
+
+        # ─── OPTIMIZATION: OFFLOAD COMPUTE TO CELERY WORKER ───
+        # .delay() pushes serialization data to Redis and exits instantly (~2-5ms)
+        run_heavy_ingestion_task.delay(
+            safe_file_path=safe_file_path,
             kb_id=str(kb_id),
+            doc_id=str(doc_id),
             user_id=str(user_id)
         )
 
-        update_document_status(engine, document_id=doc_id)
-
+        # Return status 202 to the UI immediately, freeing up the Uvicorn thread
         return {
-            "status": "success",
-            "message": "File saved locally and successfully ingested into the vector database.",
+            "status": "processing",
+            "message": "File uploaded successfully. Processing started in the background.",
             "data": {
                 "knowledge_base_id": str(kb_id),
-                "document_id": str(doc_id),
-                "saved_path": safe_file_path
+                "document_id": str(doc_id)
             }
         }
 

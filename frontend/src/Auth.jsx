@@ -51,7 +51,10 @@ export default function Auth() {
           localStorage.setItem('token', data.access_token);
         }
         alert(`Success! You have successfully ${isLogin ? 'logged in' : 'signed up'}.`);
-        navigate('/masterdashboard'); 
+        
+        // MODIFICATION HERE: Added { replace: true }
+        navigate('/masterdashboard', { replace: true }); 
+        
       } else {
         alert("Authentication failed. Please check your credentials or backend.");
       }

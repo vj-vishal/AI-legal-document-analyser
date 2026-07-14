@@ -48,7 +48,7 @@ def get_or_create_kb_data(engine, user_id: str | UUID, filename: str) -> dict:
                 user_id=user_id,
                 title=filename, 
                 document_type="pdf",
-                status="pending_processing" 
+                status="processing" 
             )
             db.add(new_document)
             
@@ -72,7 +72,7 @@ def get_or_create_kb_data(engine, user_id: str | UUID, filename: str) -> dict:
                 "message": f"Failed to save to database. Details: {str(e)}"
             }
         
-def update_document_status(engine, document_id: str | UUID) -> dict:
+def update_document_status(engine, document_id: str | UUID, status: str) -> dict:
     """
     Updates the status of a document in the KbDocuments table.
     """
@@ -86,15 +86,15 @@ def update_document_status(engine, document_id: str | UUID) -> dict:
             document = result.scalars().first() 
             
             if document:
-                document.status = "completed"
+                document.status = status
                 db.commit()
                 return {
                     "status": "success",
-                    "message": f"Document {document_id} status updated to completed."
+                    "message": f"Document {document_id} status updated to {status}."
                 }
             
         except Exception as e:
-            logging.error(f"Database error during updating stauss for {document_id}: {str(e)}")
+            logging.error(f"Database error during updating status for {document_id}: {str(e)}")
             return None
         
 def get_user_kb_docs(engine, user_id: str | UUID) -> list[dict]:
