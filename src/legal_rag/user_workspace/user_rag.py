@@ -21,6 +21,12 @@ import src.legal_rag.config as config
 
 load_dotenv()  
 
+# 1. Import trace from OpenTelemetry
+from opentelemetry import trace
+
+# 2. Initialize the tracer for this module
+tracer = trace.get_tracer("legal_rag_worker.rag_pipeline")
+
 class BM25sDiskRetriever(BaseRetriever):
     """
     LangChain-compatible BM25 retriever backed by bm25s with full disk persistence
@@ -194,6 +200,20 @@ class BM25sDiskRetriever(BaseRetriever):
         ]
 
 
+# 1. CREATE A GLOBAL VARIABLE TO HOLD THE MODEL IN MEMORY
+_GLOBAL_EMBEDDING_MODEL = None
+
+# 2. CREATE A HELPER FUNCTION TO MANAGE IT
+def get_embedding_model(model_name: str):
+    global _GLOBAL_EMBEDDING_MODEL
+    # If the model isn't loaded yet (first upload), load it!
+    if _GLOBAL_EMBEDDING_MODEL is None:
+        print(f"\n[INFO] Loading {model_name} into RAM for the first time. This will take ~15 seconds...")
+        _GLOBAL_EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name=model_name, model_kwargs={"device": "cuda"})
+    else:
+        print(f"\n[INFO] Model {model_name} is already in RAM! Skipping load time.")
+        
+    return _GLOBAL_EMBEDDING_MODEL
 
 class RAGPipeline:
 
@@ -213,15 +233,20 @@ class RAGPipeline:
             if embedding_model is None:
                 raise ValueError("Either 'embeddings' or 'embedding_model' must be provided.")
             
-            self.ef = HuggingFaceEmbeddings(
-                model_name=embedding_model               
-            )
+            with tracer.start_as_current_span("rag_pipeline.load_embedding_model") as load_span:
+                load_span.set_attribute("app.embedding_model", embedding_model)
+                # self.ef = HuggingFaceEmbeddings(
+                #     model_name=embedding_model               
+                # )
+                self.ef = get_embedding_model(embedding_model)
 
-        self.vector_store = Chroma(
-            collection_name=_collection,
-            embedding_function=self.ef,
-            persist_directory=str(config.VECTORSTORE_DIR)
-        )
+        with tracer.start_as_current_span("rag_pipeline.init_chromadb") as chroma_span:
+            chroma_span.set_attribute("app.collection_name", _collection)
+            self.vector_store = Chroma(
+                collection_name=_collection,
+                embedding_function=self.ef,
+                persist_directory=str(config.VECTORSTORE_DIR)
+            )
 
         self.lc_docs: List[Document] = []
             
@@ -233,23 +258,32 @@ class RAGPipeline:
         batch_docs = []
         batch_ids = []
 
-        # with open(json_path, "rb") as f:
-        for entry in json_data:
-            meta = entry.get("metadata", {})
+        # Trace the loop that prepares the documents in memory (usually very fast)
+        with tracer.start_as_current_span("rag_pipeline.prepare_documents") as prep_span:
+            prep_span.set_attribute("app.total_documents", len(json_data))
+            # with open(json_path, "rb") as f:
+            for entry in json_data:
+                meta = entry.get("metadata", {})
 
-            doc = Document(page_content=entry["page_content"], metadata=meta)
+                doc = Document(page_content=entry["page_content"], metadata=meta)
 
-            batch_docs.append(doc)
-            batch_ids.append(str(uuid4()))
+                batch_docs.append(doc)
+                batch_ids.append(str(uuid4()))
 
-            if store_docs:
-                self.lc_docs.append(doc)
+                if store_docs:
+                    self.lc_docs.append(doc)
 
-            if len(batch_docs) >= config.BATCH_SIZE:
-                self.vector_store.add_documents(batch_docs, ids=batch_ids)
-                batch_docs.clear()
-                batch_ids.clear()
+                if len(batch_docs) >= config.BATCH_SIZE:
+                    # Trace the actual embedding computation and disk writing per batch
+                    with tracer.start_as_current_span("rag_pipeline.add_documents_batch") as batch_span:
+                        batch_span.set_attribute("app.batch_size", len(batch_docs))
+                        self.vector_store.add_documents(batch_docs, ids=batch_ids)
+
+                    batch_docs.clear()
+                    batch_ids.clear()
 
         if batch_docs:
-            self.vector_store.add_documents(batch_docs, ids=batch_ids)
+            with tracer.start_as_current_span("rag_pipeline.add_documents_batch") as final_batch_span:
+                final_batch_span.set_attribute("app.batch_size", len(batch_docs))
+                self.vector_store.add_documents(batch_docs, ids=batch_ids)
 

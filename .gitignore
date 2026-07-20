@@ -17,6 +17,8 @@ dist
 # System files
 /data/
 .env
+.env.api
+.env.worker
 /notebooks/
 src/legal_rag/resource/
 src/legal_rag/user_workspace/local_kb_storage/

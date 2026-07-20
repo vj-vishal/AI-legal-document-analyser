@@ -1,7 +1,9 @@
+import os
+from dotenv import load_dotenv
+load_dotenv()
 import logging
 from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
 from typing import Annotated, Dict
-import os
 from src.legal_rag.user_workspace.database import get_or_create_kb_data, engine, load_user_data, get_user_by_email, update_document_status, get_user_kb_docs
 from src.legal_rag.user_workspace.user_data_embedding import orchestrator
 from src.legal_rag.auth.deps import get_current_user_id
@@ -16,7 +18,6 @@ from pydantic import BaseModel
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 import logging
-from dotenv import load_dotenv
 import traceback
 from src.legal_rag.guardrails.pre_guardrail import run_guardrail
 from src.legal_rag.utils import count_tokens_locally
@@ -27,8 +28,18 @@ from src.legal_rag.user_workspace.worker import run_heavy_ingestion_task
 import redis
 import magic
 from pathlib import Path
+# from opentelemetry import trace 
+from src.legal_rag.tracing import setup_tracing
 
-load_dotenv()
+# Import the instrumentors
+from opentelemetry import trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.celery import CeleryInstrumentor
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+
+# 2. CREATE A TRACER FOR THIS FILE
+# tracer = trace.get_tracer(__name__)
 
 INTERNAL_KB_ID = os.getenv("INTERNAL_KB_ID")
 
@@ -63,6 +74,22 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
 
 app= FastAPI()
+
+# --- OpenTelemetry Setup for FastAPI ---
+# 1. Initialize the global tracer for the web process
+setup_tracing("legal_rag_api")
+
+# 2. Instrument FastAPI (captures the /load_kb HTTP request)
+FastAPIInstrumentor.instrument_app(app)
+
+# 3. Instrument Celery Producer (injects trace IDs into Redis when .delay() is called)
+CeleryInstrumentor().instrument()
+
+RedisInstrumentor().instrument()
+SQLAlchemyInstrumentor().instrument(engine=engine)
+# ---------------------------------------
+
+tracer = trace.get_tracer("legal_rag_api")
 
 # Add this entire block right below app = FastAPI()
 app.add_middleware(
@@ -155,6 +182,10 @@ def load_kb(file: Annotated[UploadFile, File()],
     pdf_bytes = file.file.read()
     
     try:
+
+    # with tracer.start_as_current_span("kb.db_initialization") as span:
+        # span.set_attribute("user.id", str(user_id))
+        # span.set_attribute("file.name", file.filename)
         # 3. RUN FUNCTION 1: Get data with verified user_id from the token
         db_result = get_or_create_kb_data(
             engine=engine, 
@@ -171,35 +202,18 @@ def load_kb(file: Annotated[UploadFile, File()],
         kb_id = db_result["knowledge_base_id"]
         doc_id = db_result["document_id"]
 
+        with tracer.start_as_current_span("save_pdf_to_disk"):
         # 4. Save file to tenant-isolated directory
-        kb_folder_path = os.path.join(STORAGE_BASE_DIR, str(kb_id))
-        os.makedirs(kb_folder_path, exist_ok=True) 
-        
-        safe_file_path = os.path.join(kb_folder_path, f"{doc_id}.pdf")
+            kb_folder_path = os.path.join(STORAGE_BASE_DIR, str(kb_id))
+            os.makedirs(kb_folder_path, exist_ok=True) 
+            
+            safe_file_path = os.path.join(kb_folder_path, f"{doc_id}.pdf")
 
-        with open(safe_file_path, "wb") as local_file:
-            local_file.write(pdf_bytes)
+            with open(safe_file_path, "wb") as local_file:
+                local_file.write(pdf_bytes)
 
-        # orchestrator(
-        #     pdf_path=safe_file_path,
-        #     collection_name=str(kb_id), 
-        #     kb_document_id=str(doc_id),
-        #     kb_id=str(kb_id),
-        #     user_id=str(user_id)
-        # )
 
-        # update_document_status(engine, document_id=doc_id)
-
-        # return {
-        #     "status": "success",
-        #     "message": "File saved locally and successfully ingested into the vector database.",
-        #     "data": {
-        #         "knowledge_base_id": str(kb_id),
-        #         "document_id": str(doc_id),
-        #         "saved_path": safe_file_path
-        #     }
-        # }
-
+    # with tracer.start_as_current_span("kb.celery_dispatch") as span:
         # ─── OPTIMIZATION: OFFLOAD COMPUTE TO CELERY WORKER ───
         # .delay() pushes serialization data to Redis and exits instantly (~2-5ms)
         run_heavy_ingestion_task.delay(
