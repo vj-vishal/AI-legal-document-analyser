@@ -25,7 +25,7 @@ def check_and_reserve(user_id: str, resource: str, amount: int, daily_limit: int
     if not ok_day:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Daily limit reached for {resource} ({used_day}/{daily_limit}). Resets at midnight UTC.",
+            detail=f"Daily limit reached for {resource} ({used_day}/{daily_limit}). Remaining quota is insufficient to process another request. Resets at midnight UTC.",
         )
 
     ok_month, used_month, _ = reserve_quota(keys=[month_key], args=[amount, monthly_limit, SECONDS_UNTIL_MONTH_END_BUFFER])

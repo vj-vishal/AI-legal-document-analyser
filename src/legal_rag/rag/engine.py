@@ -27,6 +27,12 @@ import re
 
 load_dotenv()
 
+# 1. Import trace from OpenTelemetry
+from opentelemetry import trace
+
+# 2. Initialize the tracer for this module
+tracer = trace.get_tracer("legal_rag_api.rag_engine")
+
 # ─────────────────────────────────────────────
 # Prompt
 # ─────────────────────────────────────────────
@@ -419,27 +425,31 @@ class HybridRerankRetriever(BaseRetriever):
         bm25_user: BM25sDiskRetriever,
         internal_store: Chroma,
         user_store: Chroma,
+        load_reranker: Any
     ) -> "HybridRerankRetriever":
         """
         Build the hybrid retriever from a pre-built BM25sDiskRetriever
         and the user's Chroma vector store.
         Accepts either a freshly built or disk-loaded BM25 retriever.
         """
-        # --- Dense retrievers ---
-        dense_internal = internal_store.as_retriever(
-            search_kwargs={"k": config.DENSE_K}
-        )
-        dense_user = user_store.as_retriever(
-            search_kwargs={"k": config.DENSE_K}
-        )
-
-        reranker = CrossEncoder(
-            "BAAI/bge-reranker-v2-m3",
-            device="cuda",                         
-            max_length=1024,                       
-            default_activation_function=None,
-            model_kwargs={"torch_dtype": torch.float16},  
-)
+        with tracer.start_as_current_span("load_dense_internal") as dense_internal_span:
+            # --- Dense retrievers ---
+            dense_internal = internal_store.as_retriever(
+                search_kwargs={"k": config.DENSE_K}
+            )
+        with tracer.start_as_current_span("load_dense_user") as dense_user_span:
+            dense_user = user_store.as_retriever(
+                search_kwargs={"k": config.DENSE_K}
+            )
+        
+#         with tracer.start_as_current_span("load_cross_encoder") as cross_encoder_span:
+#             reranker = CrossEncoder(
+#                 "BAAI/bge-reranker-v2-m3",
+#                 device="cuda",                         
+#                 max_length=1024,                       
+#                 default_activation_function=None,
+#                 model_kwargs={"torch_dtype": torch.float16},  
+# )
 
         return cls(
             bm25_internal=bm25_internal,
@@ -447,7 +457,7 @@ class HybridRerankRetriever(BaseRetriever):
             dense_internal=dense_internal,
             dense_user=dense_user,
             # ensemble=ensemble,
-            reranker=reranker
+            reranker=load_reranker
         )
 
     def _get_relevant_documents(
@@ -460,11 +470,15 @@ class HybridRerankRetriever(BaseRetriever):
         kb_document_id: str = None
     ) -> List[Document]:
 
+        with tracer.start_as_current_span("internal_dense_retriever") as internal_span:
         # 1. Always retrieve from Internal Stores
-        dense_int_docs = self.dense_internal.vectorstore.similarity_search(
-            query, k=config.DENSE_K
-        )
-        bm25_int_docs = self.bm25_internal.invoke(query)
+            dense_int_docs = self.dense_internal.vectorstore.similarity_search(
+                query, k=config.DENSE_K
+            )
+
+        with tracer.start_as_current_span("internal_bm25_retriever") as internal_bm25_span:
+
+            bm25_int_docs = self.bm25_internal.invoke(query)
 
         # 2. Conditionally retrieve from User Stores
         dense_usr_docs = []
@@ -485,18 +499,20 @@ class HybridRerankRetriever(BaseRetriever):
             else:
                 chroma_filter = filter_conditions[0]
 
+            with tracer.start_as_current_span("user_dense_retriever") as user_span:
             # Fetch User Docs
-            dense_usr_docs = self.dense_user.vectorstore.similarity_search(
-                query, k=config.DENSE_K, filter=chroma_filter
-            )
+                dense_usr_docs = self.dense_user.vectorstore.similarity_search(
+                    query, k=config.DENSE_K, filter=chroma_filter
+                )
             
-            # Pass document_id to BM25 only if it exists (assuming your BM25 implementation handles None gracefully)
-            bm25_usr_docs = self.bm25_user.invoke(
-                query, 
-                user_id=user_id, 
-                kb_id=kb_id, 
-                document_id=kb_document_id
-            )
+            with tracer.start_as_current_span("user_bm25_retriever") as user_bm25_span:
+                # Pass document_id to BM25 only if it exists (assuming your BM25 implementation handles None gracefully)
+                bm25_usr_docs = self.bm25_user.invoke(
+                    query, 
+                    user_id=user_id, 
+                    kb_id=kb_id, 
+                    document_id=kb_document_id
+                )
 
         # Combine all retrieved documents
         all_docs = dense_int_docs + dense_usr_docs + bm25_int_docs + bm25_usr_docs
@@ -511,8 +527,11 @@ class HybridRerankRetriever(BaseRetriever):
         if not unique_docs:
             return []
 
-        pairs = [(query, doc.page_content) for doc in unique_docs]
-        scores = self.reranker.predict(pairs)
+        with tracer.start_as_current_span("reranker_setup") as reranker_span:
+            reranker_span.set_attribute("app.reranker_model", "BAAI/bge-reranker-v2-m3")
+
+            pairs = [(query, doc.page_content) for doc in unique_docs]
+            scores = self.reranker.predict(pairs)
 
         ranked = sorted(zip(unique_docs, scores), key=lambda x: x[1], reverse=True)
         return [doc for doc, _ in ranked[:config.RERANK_TOP_K]]
@@ -656,16 +675,19 @@ class LLMGenerator:
         # Combine the chunks into a single text block
         chunks_string = "\n\n".join(formatted_chunks)
         
-        messages = [
-            SystemMessage(content=system_template), # Your RAG system template
-            HumanMessage(content=user_template.format(
-                chunks=chunks_string,
-                query=query,
-                chat_history=chat_history
-            ))
-        ]
-        response = self.llm.invoke(messages)
-        return response.content
+        with tracer.start_as_current_span("llm_generation") as llm_span:
+            llm_span.set_attribute("app.query", query)
+            
+            messages = [
+                SystemMessage(content=system_template), # Your RAG system template
+                HumanMessage(content=user_template.format(
+                    chunks=chunks_string,
+                    query=query,
+                    chat_history=chat_history
+                ))
+            ]
+            response = self.llm.invoke(messages)
+            return response.content
 
 if __name__ == "__main__":
     # Quick local test

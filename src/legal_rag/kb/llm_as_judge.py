@@ -28,6 +28,12 @@ from enum import Enum
 
 load_dotenv()
 
+# 1. Import trace from OpenTelemetry
+from opentelemetry import trace
+
+# 2. Initialize the tracer for this module
+tracer = trace.get_tracer("legal_rag_api.llm_as_judge")
+
 
 # ──────────────────────────────────────────────
 # Enums
@@ -254,7 +260,11 @@ class GroqRetrievalJudge:
             f"{json.dumps(schema, ensure_ascii=False)}"
         )
 
-        response = self.client.chat.completions.create(
+        with tracer.start_as_current_span("judge_response") as response_span:
+            response_span.set_attribute("app.query", query)
+            response_span.set_attribute("app.chunk_count", len(chunks))
+
+            response = self.client.chat.completions.create(
             model=config.LLM_AS_JUDGE,
             temperature=config.JUDGE_TEMPERATURE,
             response_format={"type": "json_object"},
@@ -264,8 +274,8 @@ class GroqRetrievalJudge:
             ],
         )
 
-        content = response.choices[0].message.content
-        data = json.loads(content)
+            content = response.choices[0].message.content
+            data = json.loads(content)
         return data
     
 class RetrievalDecisionManager:

@@ -2,7 +2,8 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 import logging
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends, status, Request
+from contextlib import asynccontextmanager
 from typing import Annotated, Dict
 from src.legal_rag.user_workspace.database import get_or_create_kb_data, engine, load_user_data, get_user_by_email, update_document_status, get_user_kb_docs
 from src.legal_rag.user_workspace.user_data_embedding import orchestrator
@@ -25,6 +26,7 @@ from src.legal_rag.rate_limit.usage_limiter import check_and_reserve, adjust_act
 from src.legal_rag.rate_limit.config import FREE_LIMITS, ESTIMATED_CHAT_COST
 from src.legal_rag.rate_limit.redis_client import redis_client
 from src.legal_rag.user_workspace.worker import run_heavy_ingestion_task
+from src.legal_rag.kb.main import KnowledgeBaseManager
 import redis
 import magic
 from pathlib import Path
@@ -73,7 +75,15 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
-app= FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("🚀 Booting up Legal AI Models into GPU VRAM...")
+    app.state.kb_manager = KnowledgeBaseManager() # <-- LOAD ONCE
+    print("✅ Models ready!")
+    yield
+    print("Shutting down...")
+
+app= FastAPI(lifespan=lifespan)
 
 # --- OpenTelemetry Setup for FastAPI ---
 # 1. Initialize the global tracer for the web process
@@ -277,7 +287,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
 
 @app.post("/chat")
-def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
+def chat(request: ChatRequest, raw_request: Request, user_id: str = Depends(get_current_user_id)):
 
     # ── rate limit check: chat token quota (pre-check with estimate) ──
     check_and_reserve(
@@ -315,20 +325,23 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
         if is_new_session:
             update_session_title(engine, session_id, first_user_message=query)
 
-        initial_response= run_guardrail(query)
-        if initial_response.get("gate")=="fail":
-            response_text= initial_response.get("response")
-            log_ai_response(engine, session_id, response_text, tokens=query_token_count)
-            # ── refund the reserved estimate since LLM was never called ──
-            day_adjusted_token, month_adjusted_token= adjust_actual_usage(user_id, "chat_tokens", delta=-ESTIMATED_CHAT_COST)
-            return {
-                "status": "fail",
-                "session_id": session_id,
-                "message": "Guardrail triggered. Query not processed.",
-                "answer": response_text,
-                "day_adjusted_token": FREE_LIMITS["chat_tokens_daily"] - day_adjusted_token,
-                "month_adjusted_token": FREE_LIMITS["chat_tokens_monthly"] - month_adjusted_token
-            }
+        with tracer.start_as_current_span("run_guardrail") as guardrail_span:
+            guardrail_span.set_attribute("app.user_id", user_id)
+            initial_response= run_guardrail(query)
+            if initial_response.get("gate")=="fail":
+                response_text= initial_response.get("response")
+                response_token_count = count_tokens_locally(response_text, model_name="gpt-4o")
+                log_ai_response(engine, session_id, response_text, tokens=response_token_count)
+                # ── refund the reserved estimate since LLM was never called ──
+                day_adjusted_token, month_adjusted_token= adjust_actual_usage(user_id, "chat_tokens", delta=-ESTIMATED_CHAT_COST)
+                return {
+                    "status": "fail",
+                    "session_id": session_id,
+                    "message": "Guardrail triggered. Query not processed.",
+                    "answer": response_text,
+                    "day_adjusted_token": FREE_LIMITS["chat_tokens_daily"] - day_adjusted_token,
+                    "month_adjusted_token": FREE_LIMITS["chat_tokens_monthly"] - month_adjusted_token
+                }
 
         # 4. Fetch Conversation Memory (Crucial for multi-turn chat)
         chat_history = get_chat_history(engine, session_id, limit=5)
@@ -342,15 +355,19 @@ def chat(request: ChatRequest, user_id: str = Depends(get_current_user_id)):
         # 2. Log User Query immediately to the current session
         log_user_query(engine, session_id=session_id, query=query, token=total_estimated_tokens)
 
-        # 5. Execute RAG Pipeline / LLM Orchestration
-        # Pass chat_history into your orchestrator so the LLM remembers previous turns
-        response_text = chat_orchestrator(
-            query=query, 
-            user_id=user_id, 
-            kb_id=knowledge_base_id, 
-            kb_document_id=kb_document_id,
-            chat_history=chat_history 
-        )
+        kb_manager = raw_request.app.state.kb_manager
+
+        with tracer.start_as_current_span("chat_orchestrator") as chat_span:
+            # 5. Execute RAG Pipeline / LLM Orchestration
+            # Pass chat_history into your orchestrator so the LLM remembers previous turns
+            response_text = chat_orchestrator(
+                query=query, 
+                user_id=user_id, 
+                kb_id=knowledge_base_id, 
+                kb_document_id=kb_document_id,
+                chat_history=chat_history,
+                manager=kb_manager
+            )
 
         response_token_count = count_tokens_locally(response_text, model_name="gpt-4o") 
 
