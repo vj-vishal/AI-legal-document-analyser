@@ -7,7 +7,6 @@ def extract_chapters_from_pdf(pdf_path):
         print(f"Error: The file '{pdf_path}' was not found.")
         return
 
-    # Open the document
     doc = pymupdf.open(pdf_path)
 
     # Extract the Table of Contents
@@ -42,7 +41,6 @@ def extract_chapters_from_pdf(pdf_path):
             chapter_text = ""
 
             # Convert 1-based PDF page numbers to 0-based indices for PyMuPDF
-            # We use max() and min() to ensure we don't go out of bounds
             start_idx = max(0, start_page - 1)
             end_idx = min(doc.page_count, end_page)
 
@@ -51,7 +49,6 @@ def extract_chapters_from_pdf(pdf_path):
                 page = doc.load_page(page_num)
                 chapter_text += page.get_text()
 
-            # Show a preview of the extracted text (first 150 characters) to verify the result
             clean_preview = chapter_text.strip().replace('\n', ' ')[:150]
             print(f"Extracted Preview: {clean_preview}...")
             print("-" * 60)

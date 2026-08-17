@@ -24,7 +24,7 @@ EVAL_COLLECTION_NAME = "rag_legaldoc_eval"
 BATCH_SIZE       = 100
 EMBEDDING_MODEL = "microsoft/harrier-oss-v1-0.6b"
 # ── LLM ───────────────────────────────────────────────────────────────────────
-GROQ_MODEL       = "llama-3.3-70b-versatile"
+GROQ_MODEL       = "openai/gpt-oss-120b"
 GROQ_TEMPERATURE = 0.1
 GROQ_MAX_TOKENS  = 3000
 
@@ -38,7 +38,7 @@ BM25_K               = 10
 DENSE_K              = 10
 
 # ── LLM as Judge ────────────────────────────────────────────────────────────────
-LLM_AS_JUDGE       = "llama-3.3-70b-versatile"
+LLM_AS_JUDGE       = "openai/gpt-oss-120b"
 JUDGE_TEMPERATURE = 0.1
 PASS_THRESHOLD = 0.75
 RETRY_THRESHOLD = 0.50

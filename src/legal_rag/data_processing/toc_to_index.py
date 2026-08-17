@@ -50,16 +50,15 @@ def _clean_json(content: str) -> str:
 
 class LLMGenerator:
     def __init__(self):
-        # FIX: Ensure GROQ_API_KEY is in your .env file
+    
         self.llm = ChatGroq(
-            model_name="llama-3.3-70b-versatile",  # FIX: Valid Groq model
-            temperature=0.0,               # FIX: Set to 0 for maximum determinism
+            model_name="llama-3.3-70b-versatile",  
+            temperature=0.0,               
             max_tokens=3000,
-            # FIX: Explicitly enforce JSON output mode
             model_kwargs={"response_format": {"type": "json_object"}}
         )
 
-    # FIX: Corrected type hints
+
     def generate_answer(self, raw_text: str) -> list:
         messages = [
             SystemMessage(content=system_template),

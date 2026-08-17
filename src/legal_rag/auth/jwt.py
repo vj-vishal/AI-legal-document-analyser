@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()  
 
 # ─── Config ────────────────────────────────────────────────
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-in-production")
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 
 ALGORITHM = "HS256"
 

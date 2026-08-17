@@ -355,7 +355,7 @@ def chat(request: ChatRequest, raw_request: Request, user_id: str = Depends(get_
         # 2. Log User Query immediately to the current session
         log_user_query(engine, session_id=session_id, query=query, token=total_estimated_tokens)
 
-        kb_manager = raw_request.app.state.kb_manager
+        kb_manager = raw_request.app.state.kb_manager # <-- REUSE THE SINGLETON INSTANCE CREATED AT STARTUP
 
         with tracer.start_as_current_span("chat_orchestrator") as chat_span:
             # 5. Execute RAG Pipeline / LLM Orchestration

@@ -11,12 +11,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Suppress Hugging Face verbose logs
+# Suppress Hugging Face verbose logs and print only errors.
 logging.getLogger("transformers").setLevel(logging.ERROR)
 
 print("Booting up Perfected Hybrid Pipeline...")
 
-
+# cutomizing the target labels for GLiNER2
 TARGET_LABELS =  [
     "person", 
     "company", 

@@ -23,7 +23,6 @@ def remove_synopsis_block(text):
         stripped = line.strip()
 
         # 1. THE TRIGGER: Enter "Delete Mode" when we see "Synopsis"
-        # ^[\s|]* allows for any number of spaces or pipes before the word
         if re.match(r"(?i)^[\s|]*synopsis\b", stripped):
             in_synopsis = True
             target_heading = None # Reset target for the new synopsis
@@ -33,16 +32,13 @@ def remove_synopsis_block(text):
             # 2. THE TARGET LOCK: Figure out where to stop deleting
             if target_heading is None:
                 # Skip empty lines OR Markdown table separator lines (e.g., |---|---|)
-                # ^[\s|\-]+$ means "lines containing ONLY spaces, pipes, or dashes"
                 if not stripped or re.match(r'^[\s|\-]+$', stripped):
                     continue
 
                 # Chop the line into columns based on the pipes.
-                # .strip('|') ensures we don't get empty strings from the outer edges of the table.
                 columns = stripped.strip('|').split('|')
 
                 # Combine the first two columns to make a strong, highly specific target
-                # e.g., "[s 1.1]" + " Corresponding Section..."
                 raw_target = columns[0]
                 if len(columns) > 1:
                     raw_target += columns[1]
